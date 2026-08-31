@@ -1,0 +1,92 @@
+name: Deploy on Tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy with auto-rollback
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: 22
+          script_stop: false
+          script: |
+            TAG="${{ github.ref_name }}"
+            APP_DIR=/opt/gpx2mbtiles
+            LAST_FILE=$APP_DIR/.last_success
+            HEALTH_URL=http://127.0.0.1:8000/api/health
+
+            echo "=== Deploying tag: $TAG ==="
+            cd $APP_DIR || exit 1
+
+            git fetch --tags || exit 1
+            git checkout "$TAG" || exit 1
+
+            # ---- 构建并启动 ----
+            echo "=== Building image ==="
+            docker compose build --pull
+            BUILD_OK=$?
+            DEPLOY_OK=0
+
+            if [ $BUILD_OK -eq 0 ]; then
+              echo "=== Starting container ==="
+              docker compose up -d
+
+              # ---- 健康检查（最多 60 秒）----
+              echo "=== Waiting for health check ==="
+              for i in $(seq 1 30); do
+                if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+                  DEPLOY_OK=1
+                  echo "Health check passed after ~$((i*2))s"
+                  break
+                fi
+                sleep 2
+              done
+
+              if [ $DEPLOY_OK -eq 1 ]; then
+                echo "$TAG" > "$LAST_FILE"
+                echo "=== Deploy SUCCESS: $TAG ==="
+                exit 0
+              fi
+              echo "=== Health check FAILED after 60s ==="
+            else
+              echo "=== Build FAILED (exit $BUILD_OK) ==="
+            fi
+
+            # ---- 自动回滚到上一个成功 tag ----
+            echo "=== Attempting rollback ==="
+            if [ ! -f "$LAST_FILE" ]; then
+              echo "ERROR: No previous successful deploy recorded ($LAST_FILE), cannot rollback"
+              exit 1
+            fi
+            PREV_TAG=$(cat "$LAST_FILE")
+            echo "Rolling back to: $PREV_TAG"
+
+            git checkout "$PREV_TAG" || exit 1
+            docker compose build --pull || exit 1
+            docker compose up -d || exit 1
+
+            # ---- 验证回滚后健康 ----
+            ROLLBACK_OK=0
+            for i in $(seq 1 30); do
+              if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+                ROLLBACK_OK=1
+                echo "Rollback health check passed after ~$((i*2))s"
+                break
+              fi
+              sleep 2
+            done
+
+            if [ $ROLLBACK_OK -eq 1 ]; then
+              echo "=== Rollback SUCCESS: restored $PREV_TAG (deploy of $TAG failed) ==="
+            else
+              echo "=== Rollback FAILED: manual intervention required ==="
+            fi
+            exit 1
