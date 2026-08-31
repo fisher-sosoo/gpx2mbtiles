@@ -1,0 +1,13 @@
+.venv/
+data/
+smoke_data/
+real_data/
+restart_data/
+auth_data/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.mbtiles
+.env
+smoke.gpx
+smoke_out.mbtiles

@@ -1,0 +1,15 @@
+services:
+  gpx2mbtiles:
+    build: .
+    image: gpx2mbtiles:latest
+    container_name: gpx2mbtiles
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data

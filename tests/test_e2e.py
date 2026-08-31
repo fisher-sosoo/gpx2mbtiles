@@ -1,0 +1,387 @@
+import asyncio
+import sqlite3
+
+import pytest
+
+from app.task_manager import (CANCELLED, COMPLETED, DOWNLOADING, FAILED,
+                              QUEUED)
+from tests.conftest import SERVER_BEHAVIOR, make_gpx
+
+
+async def _poll_status(client, task_id, timeout=40.0):
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = await client.get(f"/api/status/{task_id}")
+        assert resp.status_code == 200
+        s = resp.json()
+        if s["status"] in (COMPLETED, FAILED, CANCELLED):
+            return s
+        await asyncio.sleep(0.1)
+    raise TimeoutError(f"task {task_id} not finished in {timeout}s")
+
+
+async def _submit(client, points=None, buffer=0, min_zoom=10, max_zoom=10,
+                  concurrency=2, interval_ms=0, filename="t.gpx",
+                  output_format="mbtiles"):
+    gpx = make_gpx(points or [(39.9, 116.4)])
+    files = {"file": (filename, gpx.encode(), "application/gpx+xml")}
+    data = {
+        "buffer_meters": str(buffer),
+        "min_zoom": str(min_zoom),
+        "max_zoom": str(max_zoom),
+        "concurrency": str(concurrency),
+        "interval_ms": str(interval_ms),
+        "output_format": output_format,
+    }
+    return await client.post("/api/submit", files=files, data=data)
+
+
+async def test_health(client):
+    resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+async def test_submit_rejects_wrong_extension(client):
+    resp = await _submit(client, filename="t.txt")
+    assert resp.status_code == 400
+
+
+async def test_submit_rejects_invalid_gpx(client):
+    files = {"file": ("t.gpx", b"not a gpx file", "application/gpx+xml")}
+    data = {"buffer_meters": "0", "min_zoom": "10", "max_zoom": "10",
+            "concurrency": "1", "interval_ms": "0"}
+    resp = await client.post("/api/submit", files=files, data=data)
+    assert resp.status_code == 400
+    assert "解析失败" in resp.json()["detail"]
+
+
+async def test_submit_rejects_empty_gpx(client):
+    files = {"file": ("t.gpx", b"   ", "application/gpx+xml")}
+    data = {"buffer_meters": "0", "min_zoom": "10", "max_zoom": "10",
+            "concurrency": "1", "interval_ms": "0"}
+    resp = await client.post("/api/submit", files=files, data=data)
+    assert resp.status_code == 400
+
+
+async def test_status_404(client):
+    resp = await client.get("/api/status/deadbeef")
+    assert resp.status_code == 404
+
+
+async def test_full_flow_success(client):
+    """上传 → 下载 → 完成 → 下载 mbtiles 且为合法 SQLite。"""
+    resp = await _submit(client)
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    assert len(task_id) == 32  # uuid hex
+
+    s = await _poll_status(client, task_id)
+    assert s["status"] == COMPLETED
+    assert s["total_tiles"] == 1
+    assert s["downloaded"] == 1
+    assert s["failed_tiles"] == 0
+    assert s["download_url"] == f"/api/download/{task_id}"
+
+    dl = await client.get(f"/api/download/{task_id}")
+    assert dl.status_code == 200
+    body = dl.content
+    assert body[:16] == b"SQLite format 3\x00"
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".mbtiles")
+    os.close(fd)
+    with open(path, "wb") as f:
+        f.write(body)
+    try:
+        conn = sqlite3.connect(path)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"tiles", "metadata"} <= tables
+        meta = dict(conn.execute("SELECT name, value FROM metadata").fetchall())
+        assert "type" not in meta
+        assert meta["format"] == "png"
+        assert meta["minzoom"] == "10" and meta["maxzoom"] == "10"
+        assert len(meta["bounds"].split(",")) == 4
+        rows = conn.execute("SELECT count(*) FROM tiles").fetchone()[0]
+        assert rows == 1
+        conn.close()
+    finally:
+        os.unlink(path)
+
+
+async def test_full_flow_gpkg_success(client):
+    """默认/显式 gpkg：完成 → 下载 .gpkg 且符合 GeoPackage 规范。"""
+    resp = await _submit(client, output_format="gpkg")
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+
+    s = await _poll_status(client, task_id)
+    assert s["status"] == COMPLETED
+    assert s["output_format"] == "gpkg"
+    assert s["file_name"].endswith(".gpkg")
+    assert s["download_url"] == f"/api/download/{task_id}"
+
+    dl = await client.get(f"/api/download/{task_id}")
+    assert dl.status_code == 200
+    body = dl.content
+    assert body[:16] == b"SQLite format 3\x00"
+    assert "attachment" in dl.headers.get("content-disposition", "")
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".gpkg")
+    os.close(fd)
+    with open(path, "wb") as f:
+        f.write(body)
+    try:
+        conn = sqlite3.connect(path)
+        app_id = conn.execute("PRAGMA application_id").fetchone()[0]
+        assert app_id == 0x47504B47, hex(app_id)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"gpkg_contents", "gpkg_spatial_ref_sys",
+                "gpkg_tile_matrix_set", "gpkg_tile_matrix", "tiles"} <= tables
+        # srs 3857 已注册
+        srs = conn.execute(
+            "SELECT srs_id, organization, organization_coordsys_id"
+            " FROM gpkg_spatial_ref_sys").fetchone()
+        assert srs[0] == 3857 and srs[1] == "EPSG" and srs[2] == 3857
+        # contents 指向 tiles 表且 data_type=tiles
+        row = conn.execute(
+            "SELECT data_type, srs_id FROM gpkg_contents WHERE table_name='tiles'").fetchone()
+        assert row == ("tiles", 3857)
+        # 瓦片金字塔覆盖 zoom 10
+        mats = {r[0] for r in conn.execute(
+            "SELECT zoom_level FROM gpkg_tile_matrix").fetchall()}
+        assert 10 in mats
+        n = conn.execute("SELECT count(*) FROM tiles").fetchone()[0]
+        assert n == 1
+        # 下载到的瓦片 blob 是 PNG
+        blob = conn.execute("SELECT tile_data FROM tiles LIMIT 1").fetchone()[0]
+        assert blob[:8] == bytes.fromhex("89504e470d0a1a0a")
+        conn.close()
+    finally:
+        os.unlink(path)
+
+
+async def test_submit_rejects_bad_output_format(client):
+    files = {"file": ("t.gpx", make_gpx([(39.9, 116.4)]).encode(), "application/gpx+xml")}
+    data = {"buffer_meters": "0", "min_zoom": "10", "max_zoom": "10",
+            "concurrency": "1", "interval_ms": "0", "output_format": "exe"}
+    resp = await client.post("/api/submit", files=files, data=data)
+    assert resp.status_code == 400
+    assert "output_format" in resp.json()["detail"]
+
+
+async def test_retry_on_transient_500(client):
+    """前 1 个请求 500，重试后成功完成。"""
+    SERVER_BEHAVIOR["fail_first_n"] = 1
+    resp = await _submit(client)
+    assert resp.status_code == 200
+    s = await _poll_status(client, resp.json()["task_id"])
+    assert s["status"] == COMPLETED
+    assert s["downloaded"] == 1
+    assert s["failed_tiles"] == 0
+
+
+async def test_download_conflict_while_running(client):
+    """任务未完成时下载返回 409。"""
+    SERVER_BEHAVIOR["slow_seconds"] = 0.2
+    resp = await _submit(client, buffer=10000, min_zoom=12, max_zoom=12,
+                         concurrency=1)
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    # 等它进入下载阶段
+    for _ in range(100):
+        s = (await client.get(f"/api/status/{task_id}")).json()
+        if s["status"] == DOWNLOADING:
+            break
+        await asyncio.sleep(0.05)
+    dl = await client.get(f"/api/download/{task_id}")
+    assert dl.status_code == 409
+    # 收尾：取消，避免测试悬挂
+    await client.post(f"/api/cancel/{task_id}")
+    await _poll_status(client, task_id)
+
+
+async def test_cancel_downloading(client, settings, monkeypatch):
+    """下载中取消 → 状态 cancelled，临时文件清理。"""
+    SERVER_BEHAVIOR["slow_seconds"] = 0.05
+    resp = await _submit(client, buffer=10000, min_zoom=13, max_zoom=13,
+                         concurrency=2)
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    for _ in range(200):
+        s = (await client.get(f"/api/status/{task_id}")).json()
+        if s["status"] == DOWNLOADING:
+            break
+        await asyncio.sleep(0.05)
+    assert s["status"] == DOWNLOADING
+
+    cancel = await client.post(f"/api/cancel/{task_id}")
+    assert cancel.status_code == 200
+
+    s = await _poll_status(client, task_id)
+    assert s["status"] == CANCELLED
+
+    # 临时文件已清理
+    from pathlib import Path
+    task_dir = Path(settings.data_dir) / "tasks" / task_id
+    assert not (task_dir / "input.gpx").exists()
+    assert not (task_dir / "work.mbtiles").exists()
+    assert not (task_dir / f"{task_id}.mbtiles").exists()
+
+
+async def test_blocked_403_fails(client):
+    """全部 403 → 封禁判定 → 任务失败。"""
+    SERVER_BEHAVIOR["status_override"] = 403
+    resp = await _submit(client, buffer=8000, min_zoom=12, max_zoom=12,
+                         concurrency=4)
+    assert resp.status_code == 200
+    s = await _poll_status(client, resp.json()["task_id"], timeout=60)
+    assert s["status"] == FAILED
+    assert "403/429" in s["error"]
+    assert s["blocked_count"] > 0
+    # 失败任务不可下载
+    dl = await client.get(f"/api/download/{resp.json()['task_id']}")
+    assert dl.status_code == 409
+
+
+async def test_concurrent_task_limit(client):
+    """同时运行任务数达上限时，第 3 个任务返回 429。"""
+    SERVER_BEHAVIOR["slow_seconds"] = 0.15
+    r1 = await _submit(client, buffer=8000, min_zoom=12, max_zoom=12, concurrency=1)
+    r2 = await _submit(client, buffer=8000, min_zoom=12, max_zoom=12, concurrency=1)
+    assert r1.status_code == 200 and r2.status_code == 200
+    t1, t2 = r1.json()["task_id"], r2.json()["task_id"]
+    # 等两个任务都进入运行状态
+    for _ in range(200):
+        s1 = (await client.get(f"/api/status/{t1}")).json()
+        s2 = (await client.get(f"/api/status/{t2}")).json()
+        if s1["status"] in (DOWNLOADING,) and s2["status"] in (DOWNLOADING,):
+            break
+        await asyncio.sleep(0.05)
+    r3 = await _submit(client, buffer=8000, min_zoom=12, max_zoom=12, concurrency=1)
+    assert r3.status_code == 429
+    # 清理
+    await client.post(f"/api/cancel/{t1}")
+    await client.post(f"/api/cancel/{t2}")
+    await _poll_status(client, t1)
+    await _poll_status(client, t2)
+
+
+async def test_estimate_endpoint(client):
+    """/api/estimate 返回瓦片数与超限标记，且不创建任务。"""
+    import app.main as main_mod
+    gpx = make_gpx([(39.9, 116.4)])
+    files = {"file": ("t.gpx", gpx.encode(), "application/gpx+xml")}
+    data = {"buffer_meters": "2500", "min_zoom": "8", "max_zoom": "17"}
+    resp = await client.post("/api/estimate", files=files, data=data)
+    assert resp.status_code == 200
+    j = resp.json()
+    assert j["tiles"] > 0
+    assert j["point_count"] == 1
+    assert "exceeds_limit" in j and isinstance(j["exceeds_limit"], bool)
+    # 不创建任务
+    tasks = (await client.get("/api/tasks")).json()["tasks"]
+    assert tasks == []
+
+
+async def test_oversize_allowed_with_flag(client, monkeypatch):
+    """瓦片数超上限时 allow_oversize=true 放行。"""
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod.settings, "max_tiles_per_task", 1)
+    resp = await _submit(client, buffer=2500, min_zoom=8, max_zoom=10,
+                         output_format="mbtiles")
+    # 未放行：任务最终失败（超上限）
+    assert resp.status_code == 200
+    s = await _poll_status(client, resp.json()["task_id"])
+    assert s["status"] == FAILED
+    assert "上限" in s["error"]
+
+    # 放行后成功
+    gpx = make_gpx([(39.9, 116.4)])
+    files = {"file": ("t.gpx", gpx.encode(), "application/gpx+xml")}
+    data = {"buffer_meters": "2500", "min_zoom": "8", "max_zoom": "10",
+            "concurrency": "1", "interval_ms": "0", "output_format": "mbtiles",
+            "allow_oversize": "true"}
+    resp2 = await client.post("/api/submit", files=files, data=data)
+    assert resp2.status_code == 200
+    s2 = await _poll_status(client, resp2.json()["task_id"])
+    assert s2["status"] == COMPLETED
+    assert s2["total_tiles"] > 1
+
+
+async def test_history_list_and_manual_delete(client, settings):
+    """历史保留：完成任务留在 /api/tasks，DELETE 后移除记录与文件。"""
+    from pathlib import Path
+    resp = await _submit(client, output_format="mbtiles")
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    s = await _poll_status(client, task_id)
+    assert s["status"] == COMPLETED
+
+    # 出现在历史列表
+    tasks = (await client.get("/api/tasks")).json()["tasks"]
+    ids = [t["task_id"] for t in tasks]
+    assert task_id in ids
+    item = next(t for t in tasks if t["task_id"] == task_id)
+    assert item["file_available"] is True
+
+    # 手动删除
+    resp = await client.delete(f"/api/tasks/{task_id}")
+    assert resp.status_code == 200
+    tasks = (await client.get("/api/tasks")).json()["tasks"]
+    assert task_id not in [t["task_id"] for t in tasks]
+    task_dir = Path(settings.data_dir) / "tasks" / task_id
+    assert not task_dir.exists()
+
+    # 删除不存在的任务 404
+    resp = await client.delete(f"/api/tasks/{task_id}")
+    assert resp.status_code == 404
+
+
+async def test_task_timeout_fails_and_cleans(client, settings, monkeypatch):
+    """任务超过最大运行时间 → 标记失败并清理临时文件。"""
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod.settings, "task_timeout_seconds", 2)
+    SERVER_BEHAVIOR["slow_seconds"] = 0.1
+    # 足够多瓦片 + 单并发，确保 2 秒内跑不完
+    resp = await _submit(client, buffer=10000, min_zoom=13, max_zoom=13,
+                         concurrency=1)
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    s = await _poll_status(client, task_id, timeout=40)
+    assert s["status"] == FAILED
+    assert "超过最大运行时间" in s["error"], s["error"]
+    # 临时文件已清理
+    from pathlib import Path
+    task_dir = Path(settings.data_dir) / "tasks" / task_id
+    assert not (task_dir / "input.gpx").exists()
+    assert not (task_dir / "work.mbtiles").exists()
+    assert not (task_dir / f"{task_id}.mbtiles").exists()
+
+
+async def test_auth_token_enforced(client):
+    """配置 AUTH_TOKEN 后：无 Key 返回 401，正确 Key 放行。"""
+    import app.main as main_mod
+    old = main_mod.settings.auth_token
+    main_mod.settings.auth_token = "sekrit-key"
+    try:
+        r = await client.get("/api/health")
+        assert r.status_code == 200  # health 不受限
+        r = await client.get("/api/status/deadbeef")
+        assert r.status_code == 401
+        r = await client.get("/api/status/deadbeef",
+                             headers={"X-API-Key": "sekrit-key"})
+        assert r.status_code == 404  # 鉴权通过后才是任务不存在
+    finally:
+        main_mod.settings.auth_token = old
+
+
+async def test_invalid_params_rejected(client):
+    """min_zoom > max_zoom 提交后任务失败（服务端校验）。"""
+    resp = await _submit(client, min_zoom=14, max_zoom=10)
+    assert resp.status_code == 200
+    s = await _poll_status(client, resp.json()["task_id"])
+    assert s["status"] == FAILED
+    assert "缩放" in s["error"] or "不能大于" in s["error"]

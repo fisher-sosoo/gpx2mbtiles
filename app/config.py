@@ -1,0 +1,87 @@
+import os
+from dataclasses import dataclass
+
+
+def _env_int(name: str, default: int, lo=None, hi=None) -> int:
+    try:
+        v = int(os.getenv(name, str(default)))
+    except ValueError:
+        v = default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+def _env_float(name: str, default: float, lo=None, hi=None) -> float:
+    try:
+        v = float(os.getenv(name, str(default)))
+    except ValueError:
+        v = default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+DEFAULT_IPHONE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+class Settings:
+    def __init__(self):
+        data_dir = os.getenv("DATA_DIR", "./data")
+        if not os.path.isabs(data_dir):
+            data_dir = os.path.abspath(data_dir)
+
+        tile_proxy = os.getenv("TILE_PROXY", "").strip()
+        if not tile_proxy:
+            tile_proxy = os.getenv("HTTPS_PROXY", os.getenv("https_proxy", "")).strip()
+        if not tile_proxy:
+            tile_proxy = os.getenv("HTTP_PROXY", os.getenv("http_proxy", "")).strip()
+
+        self.data_dir = data_dir
+        # Windy “Outdoor map”户外图层真实瓦片源（provider: Seznam.cz）。
+        # 服务端实测瓦片覆盖 z0–z19；Windy 网页端地图 minZoom=3 / maxZoom=16。
+        self.tile_url_template = os.getenv(
+            "TILE_URL_TEMPLATE",
+            "https://tiles.windy.com/v1/maptiles/outdoor/256/{z}/{x}/{y}/?lang=en",
+        )
+        self.tile_proxy = tile_proxy or None
+        self.user_agent = os.getenv("TILE_USER_AGENT", DEFAULT_IPHONE_UA)
+        self.referer = os.getenv("TILE_REFERER", "https://www.windy.com/")
+        self.max_concurrency = _env_int("MAX_CONCURRENCY", 8, 1, 32)
+        self.request_interval_ms = _env_int("REQUEST_INTERVAL_MS", 100, 0, 10000)
+        self.tile_timeout_seconds = _env_float("TILE_TIMEOUT_SECONDS", 30.0, 1.0, 120.0)
+        self.retry_max = _env_int("RETRY_MAX", 3, 0, 10)
+        self.retry_backoff_base = _env_float("RETRY_BACKOFF_BASE", 0.5, 0.05, 10.0)
+        self.block_pause_seconds = _env_float("BLOCK_PAUSE_SECONDS", 30.0, 1.0, 300.0)
+        self.block_fail_min_count = _env_int("BLOCK_FAIL_MIN_COUNT", 15, 1, 10000)
+        self.block_fail_ratio = _env_float("BLOCK_FAIL_RATIO", 0.25, 0.01, 1.0)
+        self.block_consecutive_threshold = _env_int("BLOCK_CONSECUTIVE_THRESHOLD", 6, 2, 100)
+        self.task_timeout_seconds = _env_int("TASK_TIMEOUT_SECONDS", 3600, 60, 86400)
+        self.file_expiry_seconds = _env_int("FILE_EXPIRY_SECONDS", 259200, 60, 2592000)
+        self.cleanup_interval_seconds = _env_int("CLEANUP_INTERVAL_SECONDS", 60, 5, 3600)
+        self.max_running_tasks = _env_int("MAX_RUNNING_TASKS", 2, 1, 16)
+        self.max_tiles_per_task = _env_int("MAX_TILES_PER_TASK", 60000, 100, 1000000)
+        self.zoom_min_cap = _env_int("ZOOM_MIN_CAP", 3, 0, 22)
+        self.zoom_max_cap = _env_int("ZOOM_MAX_CAP", 18, 0, 22)
+        self.buffer_min = _env_float("BUFFER_MIN_METERS", 0.0, 0.0, 100000.0)
+        self.buffer_max = _env_float("BUFFER_MAX_METERS", 10000.0, 0.0, 200000.0)
+        self.max_gpx_bytes = _env_int("MAX_GPX_BYTES", 52428800, 1024, 1073741824)
+        self.disk_min_free_bytes = _env_int("DISK_MIN_FREE_BYTES", 104857600, 10485760, 1099511627776)
+        self.auth_token = os.getenv("AUTH_TOKEN", "").strip()
+
+
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings

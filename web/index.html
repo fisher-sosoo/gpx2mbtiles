@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GPX → 离线地图生成器</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#0e141b; --card:#1a2430; --line:#2a3848; --accent:#4da3ff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#ffb454; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
+         background:var(--bg); color:#e8eef4; padding:12px; padding-bottom:32px; }
+  h1 { font-size:19px; margin:8px 0 2px; display:flex; align-items:center; gap:8px; }
+  .sub { color:#8aa0b4; font-size:12.5px; margin-bottom:14px; line-height:1.5; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .card h2 { font-size:14px; margin:0 0 10px; color:#9fc2e8; font-weight:600; }
+  label { font-size:13px; color:#a9bccb; display:block; margin:10px 0 4px; }
+  input[type=file] { width:100%; font-size:13px; }
+  input[type=number], select { width:100%; background:#0f1822; border:1px solid var(--line); color:#e8eef4;
+    border-radius:9px; padding:9px 10px; font-size:15px; }
+  .row2 { display:flex; gap:10px; }
+  .row2 > div { flex:1; }
+  button { border:0; border-radius:11px; padding:12px 16px; font-size:15px; font-weight:600; cursor:pointer;
+    background:var(--accent); color:#06233f; width:100%; margin-top:6px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.secondary { background:#243547; color:#cfe1f2; }
+  button.danger { background:#5b2a2a; color:#ffc9c9; }
+  #map { height:240px; border-radius:12px; border:1px solid var(--line); background:#0d131a; display:none; }
+  .stat { display:flex; justify-content:space-between; font-size:13.5px; padding:5px 0; color:#c3d2df; }
+  .stat b { color:#fff; font-variant-numeric:tabular-nums; }
+  .status-badge { display:inline-block; padding:3px 12px; border-radius:20px; font-size:13px; font-weight:600; }
+  .st-queued { background:#2a3848; color:#9fc2e8; }
+  .st-downloading { background:#203a57; color:#7cc0ff; }
+  .st-completed { background:#123c2a; color:var(--ok); }
+  .st-failed { background:#3c1d1d; color:var(--err); }
+  .st-cancelled { background:#2e2a1d; color:var(--warn); }
+  .progress { height:10px; background:#0f1822; border-radius:6px; overflow:hidden; margin:10px 0 4px; }
+  .progress > div { height:100%; width:0%; background:linear-gradient(90deg,#4da3ff,#3ecf8e); transition:width .6s; }
+  .err-box { display:none; background:#2b1a1a; border:1px solid #5b2a2a; color:#ffb4b4; border-radius:10px;
+    padding:10px 12px; font-size:13px; margin-bottom:12px; white-space:pre-wrap; }
+  .err-box.show { display:block; }
+  .hint { font-size:12px; color:#7890a4; margin-top:4px; line-height:1.5; }
+  .tip { background:#1d2a1d; border:1px solid #2e4a2e; color:#a8d8a8; border-radius:10px; padding:10px 12px;
+    font-size:12.5px; margin-top:14px; line-height:1.6; }
+  .hist-item { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:9px 4px; border-bottom:1px solid var(--line); font-size:13px; }
+  .hist-item:last-child { border-bottom:0; }
+  .hist-main { flex:1; min-width:0; color:#c3d2df; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hist-actions { display:flex; gap:6px; flex-shrink:0; }
+  .hist-btn { border:0; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:600;
+    cursor:pointer; text-decoration:none; margin:0; }
+  .hist-dl { background:var(--accent); color:#06233f; display:inline-block; }
+  .hist-del { background:#5b2a2a; color:#ffc9c9; }
+</style>
+</head>
+<body>
+<h1>🗺️ GPX → 离线地图</h1>
+<div class="sub">上传 GPX 轨迹 → 云服务器下载瓦片并生成离线底图 → 导入 Avenza / Guru Maps 离线导航。<br>
+<i>仅供个人自用 · iOS 锁屏会暂停网页轮询，服务端任务继续运行，回前台自动续查</i></div>
+
+<div class="err-box" id="errBox"></div>
+
+<div class="card">
+  <h2>1 · 选择 GPX 文件</h2>
+  <input type="file" id="gpxFile" accept=".gpx,.xml">
+  <div class="hint">支持标准 GPX 轨迹文件（trkpt / rtept / wpt）</div>
+</div>
+
+<div class="card">
+  <h2>2 · 生成参数</h2>
+  <label>缓冲区距离（米）</label>
+  <input type="number" id="buffer" value="2500" min="0" max="10000" step="50">
+  <label>最小缩放级别 min-zoom</label>
+  <input type="number" id="minZoom" value="8" min="3" max="17" step="1">
+  <label>最大缩放级别 max-zoom <span class="hint">（越大瓦片越多越慢）</span></label>
+  <input type="number" id="maxZoom" value="17" min="3" max="17" step="1">
+  <label>输出格式 <span class="hint">（GeoPackage 是 Avenza Maps 推荐底图格式）</span></label>
+  <select id="outputFormat">
+    <option value="gpkg" selected>GeoPackage (.gpkg) — Avenza 底图</option>
+    <option value="mbtiles">MBTiles (.mbtiles) — Guru Maps 等</option>
+  </select>
+  <div class="row2">
+    <div><label>瓦片并发数</label><input type="number" id="concurrency" value="6" min="1" max="16" step="1"></div>
+    <div><label>请求间隔（毫秒）</label><input type="number" id="interval" value="100" min="0" max="5000" step="50"></div>
+  </div>
+  <div class="hint">并发越小、间隔越大越不容易被瓦片源封禁 IP</div>
+</div>
+
+<div class="card" id="previewCard" style="display:none">
+  <h2>3 · 轨迹预览</h2>
+  <div id="map"></div>
+</div>
+
+<div class="card">
+  <button id="submitBtn">🚀 提交生成任务</button>
+</div>
+
+<div class="card" id="taskCard" style="display:none">
+  <h2>4 · 任务进度</h2>
+  <div class="stat"><span>轨迹</span><b id="stName">-</b></div>
+  <div class="stat"><span>任务状态</span><span id="stBadge" class="status-badge st-queued">排队中</span></div>
+  <div class="stat"><span>总瓦片数</span><b id="stTotal">-</b></div>
+  <div class="stat"><span>已下载</span><b id="stDone">-</b></div>
+  <div class="stat"><span>失败瓦片</span><b id="stFail">-</b></div>
+  <div class="stat"><span>封禁(403/429)</span><b id="stBlock">-</b></div>
+  <div class="progress"><div id="stBar"></div></div>
+  <div class="hint" id="stErr" style="color:#ffb4b4"></div>
+  <div class="hint" id="taskUrlHint"></div>
+  <div class="row2" style="margin-top:10px">
+    <button class="secondary" id="cancelBtn" style="width:50%">取消任务</button>
+    <a id="downloadBtn" style="display:none;width:50%" download><button id="downloadBtnLabel" style="width:100%">⬇️ 下载成品</button></a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>5 · 历史地图</h2>
+  <div id="historyList"><div class="hint">加载中…</div></div>
+</div>
+
+<div class="tip">
+  <b>使用提示</b><br>
+  · 完成后用浏览器下载 .gpkg（Avenza 底图）或 .mbtiles，保存到「文件」App 再导入。<br>
+  · 提交前会先预估瓦片数；超过上限时二次确认后可继续。<br>
+  · 长轨迹或高缩放级别会让瓦片数量激增，建议分段生成。<br>
+  · iOS 锁屏后页面轮询暂停、任务在服务端继续；回到页面自动刷新，也可手动刷新本页（地址含任务 ID，刷新不丢任务）。
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  var state = { taskId: null, polling: null, gpxText: null, trackLayer: null, map: null };
+  var API_KEY = localStorage.getItem('gpx2mbtiles_key') || '';
+
+  // 统一请求封装：带 X-API-Key；401 时弹窗输入 Key 并记住
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    if (API_KEY) opts.headers['X-API-Key'] = API_KEY;
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 401) {
+        var key = prompt('请输入服务端 API Key（AUTH_TOKEN）：', API_KEY);
+        if (key === null) return Promise.reject(new Error('需要 API Key'));
+        API_KEY = key.trim();
+        localStorage.setItem('gpx2mbtiles_key', API_KEY);
+        opts.headers['X-API-Key'] = API_KEY;
+        return fetch(url, opts);
+      }
+      return r;
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function showErr(msg) {
+    var box = document.getElementById('errBox');
+    box.textContent = msg;
+    box.classList.add('show');
+  }
+  function clearErr() { document.getElementById('errBox').classList.remove('show'); }
+  function fmt(n) { return n === null || n === undefined ? '-' : n.toLocaleString(); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  // ---------- 轨迹预览（惰性初始化底图） ----------
+  function initMap() {
+    // 先让容器可见再初始化 Leaflet，否则地图以 0 尺寸创建导致视图错乱
+    document.getElementById('map').style.display = 'block';
+    if (state.map) {
+      state.map.invalidateSize();
+      return;
+    }
+    state.map = L.map('map', { zoomControl: false }).setView([39.9, 116.4], 4);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 16, attribution: '© OpenStreetMap'
+    }).addTo(state.map);
+  }
+
+  var fileInput = document.getElementById('gpxFile');
+  fileInput.addEventListener('change', function () {
+    var f = fileInput.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      state.gpxText = reader.result;
+      var parser = new DOMParser();
+      var doc = parser.parseFromString(state.gpxText, 'text/xml');
+      if (doc.querySelector('parsererror')) { showErr('GPX 文件无法解析'); return; }
+      clearErr();
+      var pts = doc.querySelectorAll('trkpt, rtept, wpt');
+      var latlngs = [];
+      pts.forEach(function (p) {
+        var la = parseFloat(p.getAttribute('lat'));
+        var lo = parseFloat(p.getAttribute('lon'));
+        if (!isNaN(la) && !isNaN(lo)) latlngs.push([la, lo]);
+      });
+      if (latlngs.length === 0) { showErr('GPX 中未找到轨迹点'); return; }
+      document.getElementById('previewCard').style.display = 'block';
+      initMap();
+      if (state.trackLayer) state.map.removeLayer(state.trackLayer);
+      state.trackLayer = L.polyline(latlngs, { color: '#ff6b6b', weight: 3 }).addTo(state.map);
+      state.map.fitBounds(L.latLngBounds(latlngs));
+    };
+    reader.readAsText(f);
+  });
+
+  // ---------- 提交（先预估瓦片数，超上限二次确认） ----------
+  function buildForm() {
+    var fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    fd.append('buffer_meters', document.getElementById('buffer').value);
+    fd.append('min_zoom', document.getElementById('minZoom').value);
+    fd.append('max_zoom', document.getElementById('maxZoom').value);
+    fd.append('concurrency', document.getElementById('concurrency').value);
+    fd.append('interval_ms', document.getElementById('interval').value);
+    fd.append('output_format', document.getElementById('outputFormat').value);
+    return fd;
+  }
+
+  function doSubmit(fd) {
+    apiFetch('/api/submit', { method: 'POST', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) { showErr('提交失败：' + (res.j.detail || JSON.stringify(res.j))); return; }
+        state.taskId = res.j.task_id;
+        // 地址刷新为带任务 ID，便于锁屏/刷新后恢复查看与下载
+        history.pushState(null, '', '?task=' + encodeURIComponent(state.taskId));
+        document.getElementById('taskCard').style.display = 'block';
+        document.getElementById('cancelBtn').disabled = false;
+        document.getElementById('downloadBtn').style.display = 'none';
+        document.getElementById('taskUrlHint').textContent =
+          '页面地址已带上任务 ID，可随时刷新恢复本任务';
+        startPolling();
+        refreshHistory();
+      })
+      .catch(function (e) { showErr('网络错误：' + e); });
+  }
+
+  document.getElementById('submitBtn').addEventListener('click', function () {
+    var f = fileInput.files[0];
+    if (!f) { showErr('请先选择 GPX 文件'); return; }
+    clearErr();
+    var fd = buildForm();
+    // 预估瓦片数
+    apiFetch('/api/estimate', { method: 'POST', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) { showErr('参数错误：' + (res.j.detail || JSON.stringify(res.j))); return; }
+        var tiles = res.j.tiles;
+        if (res.j.exceeds_limit) {
+          var go = confirm(
+            '预计需要 ' + tiles.toLocaleString() + ' 张瓦片，超过单任务上限（' +
+            res.j.max_tiles_per_task.toLocaleString() + '）。\n继续生成耗时和流量会比较大，确定继续吗？');
+          if (!go) return;
+          fd.append('allow_oversize', 'true');
+        } else {
+          console.log('预计瓦片数：' + tiles.toLocaleString());
+        }
+        doSubmit(fd);
+      })
+      .catch(function (e) { showErr('预估失败：' + e.message); });
+  });
+
+  // ---------- 轮询 ----------
+  var ST = { queued:'排队中', downloading:'下载中', completed:'已完成', failed:'失败', cancelled:'已取消' };
+  function startPolling() {
+    stopPolling();
+    pollOnce();
+    state.polling = setInterval(pollOnce, 1500);
+  }
+  function stopPolling() {
+    if (state.polling) { clearInterval(state.polling); state.polling = null; }
+  }
+
+  function pollOnce() {
+    if (!state.taskId) return;
+    apiFetch('/api/status/' + state.taskId)
+      .then(function (r) { return r.json(); })
+      .then(function (s) { render(s); })
+      .catch(function () { /* 网络抖动忽略，等待下一次轮询 */ });
+  }
+
+  function render(s) {
+    document.getElementById('stName').textContent = s.name || '-';
+    document.getElementById('stBadge').textContent = ST[s.status] || s.status;
+    document.getElementById('stBadge').className = 'status-badge st-' + s.status;
+    document.getElementById('stTotal').textContent = fmt(s.total_tiles);
+    document.getElementById('stDone').textContent = fmt(s.downloaded);
+    document.getElementById('stFail').textContent = fmt(s.failed_tiles);
+    document.getElementById('stBlock').textContent = fmt(s.blocked_count);
+    var pct = s.total_tiles > 0 ? Math.round(s.downloaded / s.total_tiles * 100) : 0;
+    document.getElementById('stBar').style.width = pct + '%';
+    document.getElementById('stErr').textContent = s.error || '';
+
+    if (s.status === 'completed') {
+      stopPolling();
+      document.getElementById('cancelBtn').disabled = true;
+      var a = document.getElementById('downloadBtn');
+      var ext = s.output_format === 'mbtiles' ? '.mbtiles' : '.gpkg';
+      if (s.file_available) {
+        a.style.display = 'inline-block';
+        a.href = s.download_url;
+        a.setAttribute('download', s.file_name || ('track' + ext));
+        document.getElementById('downloadBtnLabel').textContent =
+          '⬇️ 下载 ' + (s.output_format === 'mbtiles' ? '.mbtiles' : '.gpkg');
+      } else {
+        a.style.display = 'none';
+        document.getElementById('stErr').textContent = '成品文件已被清理，请重新提交生成';
+      }
+      refreshHistory();
+    } else if (s.status === 'failed' || s.status === 'cancelled') {
+      stopPolling();
+      document.getElementById('cancelBtn').disabled = true;
+      showErr('任务' + ST[s.status] + (s.error ? '：' + s.error : ''));
+      refreshHistory();
+    }
+  }
+
+  // ---------- 取消 ----------
+  document.getElementById('cancelBtn').addEventListener('click', function () {
+    if (!state.taskId) return;
+    apiFetch('/api/cancel/' + state.taskId, { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (s) { render(s); })
+      .catch(function (e) { showErr('取消失败：' + e); });
+  });
+
+  // ---------- 历史列表 ----------
+  function refreshHistory() {
+    apiFetch('/api/tasks')
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        var list = document.getElementById('historyList');
+        list.innerHTML = '';
+        var tasks = res.tasks || [];
+        if (!tasks.length) {
+          list.innerHTML = '<div class="hint">暂无历史任务</div>';
+          return;
+        }
+        tasks.forEach(function (t) {
+          var item = document.createElement('div');
+          item.className = 'hist-item';
+          var d = new Date(t.created_at * 1000);
+          var dateStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+            ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+          var badge = ST[t.status] || t.status;
+          var info = '🧭 ' + escapeHtml(t.name || 'track') + ' · ' + dateStr +
+            ' · ' + badge + (t.total_tiles ? ' · ' + t.total_tiles.toLocaleString() + '瓦片' : '');
+          var btns = '';
+          if (t.status === 'completed' && t.file_available) {
+            btns += '<a class="hist-btn hist-dl" href="' + escapeHtml(t.download_url) +
+              '" download>下载</a>';
+          }
+          btns += '<button class="hist-btn hist-del" data-id="' + escapeHtml(t.task_id) + '">删除</button>';
+          item.innerHTML = '<div class="hist-main">' + info + '</div>' +
+            '<div class="hist-actions">' + btns + '</div>';
+          list.appendChild(item);
+        });
+      })
+      .catch(function () {
+        document.getElementById('historyList').innerHTML =
+          '<div class="hint">历史加载失败</div>';
+      });
+  }
+
+  document.getElementById('historyList').addEventListener('click', function (ev) {
+    var btn = ev.target.closest ? ev.target.closest('.hist-del') : null;
+    if (!btn) return;
+    var tid = btn.getAttribute('data-id');
+    if (!confirm('删除该任务及生成的地图文件？')) return;
+    apiFetch('/api/tasks/' + encodeURIComponent(tid), { method: 'DELETE' })
+      .then(function (r) { return r.json(); })
+      .then(function () {
+        if (state.taskId === tid) {
+          stopPolling();
+          state.taskId = null;
+          document.getElementById('taskCard').style.display = 'none';
+          history.pushState(null, '', location.pathname);
+        }
+        refreshHistory();
+      })
+      .catch(function (e) { showErr('删除失败：' + e); });
+  });
+
+  // ---------- 页面加载：URL 带任务 ID 则直接恢复 ----------
+  var qs = new URLSearchParams(location.search);
+  var urlTaskId = qs.get('task');
+  if (urlTaskId) {
+    state.taskId = urlTaskId;
+    document.getElementById('taskCard').style.display = 'block';
+    startPolling();
+  }
+  refreshHistory();
+
+  // iOS 页面回到前台立即刷新
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && state.taskId) pollOnce();
+  });
+})();
+</script>
+</body>
+</html>
