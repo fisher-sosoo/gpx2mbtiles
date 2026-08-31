@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch: {}
 
 jobs:
   deploy:
@@ -18,7 +19,7 @@ jobs:
           port: 22022
           script_stop: false
           script: |
-            TAG="${{ github.ref_name }}"
+            TAG="${{ github.ref_type == 'tag' && github.ref_name || 'origin/main' }}"
             APP_DIR=/opt/gpx2mbtiles
             LAST_FILE=$APP_DIR/.last_success
             HEALTH_URL=http://127.0.0.1:8000/api/health
