@@ -1,4 +1,4 @@
-# 部署文档
+﻿# 部署文档
 
 > 本文件记录 gpx2mbtiles 在云服务器的完整部署方案：架构、代理、自愈、安全加固、自动化部署与运维命令。
 > 适用范围：个人自用部署（阿里云 ECS · Alibaba Cloud Linux 3 · 墙内网络）。
@@ -34,7 +34,7 @@
 | 80 | HTTP Web（Caddy 反代） | 公网（安全组入方向放行） |
 | 22022 | SSH | 公网（安全组入方向放行；22 已从 sshd 移除） |
 | 8000 | 应用 API（容器内） | 仅 127.0.0.1 回环，不对外 |
-| 7893 | mihomo 混合代理 | 仅 127.0.0.1 + Docker 网桥 172.17.0.0/16（iptables 收紧，外部 REJECT） |
+| 7893 | mihomo 混合代理 | 仅 127.0.0.1 + Docker 网桥 172.16.0.0/12（iptables 收紧，外部 REJECT） |
 
 安全组只需放行入方向 **80、22022**（出方向默认全放行）。
 
@@ -95,8 +95,8 @@
 | 措施 | 配置 |
 |---|---|
 | SSH 端口 | `22022`（sshd_config `Port 22022`；SELinux Disabled，无需 semanage） |
-| fail2ban | 5 次密码失败封禁 1 小时（jail `sshd`，`/etc/fail2ban/jail.local`，ignoreip 含 127.0.0.1/172.17.0.0/16） |
-| iptables | `/root/harden_iptables.sh`（持久化 `/etc/sysconfig/iptables` + iptables service）：放行 22022/80，7893 仅限 127.0.0.1 + 172.17.0.0/16，其余 REJECT |
+| fail2ban | 5 次密码失败封禁 1 小时（jail `sshd`，`/etc/fail2ban/jail.local`，ignoreip 含 127.0.0.1/172.16.0.0/12） |
+| iptables | `/root/harden_iptables.sh`（持久化 `/etc/sysconfig/iptables` + iptables service）：放行 22022/80，7893 仅限 127.0.0.1 + 172.16.0.0/12，其余 REJECT |
 | 密码登录 | **当前为 root 密码登录（未配 SSH 密钥）**。若仓库公开或有协作者，建议改用密钥登录并禁用密码 |
 
 > 加固命令文件在服务器 `/root/harden_iptables.sh`，修改后需 `iptables-save > /etc/sysconfig/iptables` 持久化。
