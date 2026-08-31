@@ -24,6 +24,7 @@ class TileFetcher:
     def __init__(self, settings):
         self._settings = settings
         self._session = None
+        self._subdomain_idx = 0
 
     async def open(self):
         headers = {
@@ -46,7 +47,14 @@ class TileFetcher:
     async def fetch(self, z: int, x: int, y: int) -> bytes:
         if self._session is None:
             raise RuntimeError("TileFetcher session not opened")
-        url = self._settings.tile_url_template.format(z=z, x=x, y=y)
+        template = self._settings.tile_url_template
+        subdomains = getattr(self._settings, "tile_subdomains", ())
+        if "{s}" in template and subdomains:
+            s = subdomains[self._subdomain_idx % len(subdomains)]
+            self._subdomain_idx += 1
+            url = template.format(z=z, x=x, y=y, s=s)
+        else:
+            url = template.format(z=z, x=x, y=y)
         async with self._session.get(url) as resp:
             status = resp.status
             body = await resp.read()

@@ -56,6 +56,7 @@ class Task:
     can_download: bool = False
     failed_details: list = field(default_factory=list)  # 最近 200 条失败瓦片 (z,x,y,reason)
     output_format: str = "gpkg"  # gpkg | mbtiles
+    tile_layer: str = "windy"  # windy | opentopomap
 
     def to_dict(self):
         return {
@@ -80,6 +81,7 @@ class Task:
             "file_size": self.file_size,
             "failed_details": self.failed_details,
             "output_format": self.output_format,
+            "tile_layer": self.tile_layer,
             "download_url": f"/api/download/{self.id}" if self.status == COMPLETED else None,
         }
 
@@ -112,7 +114,7 @@ class TaskManager:
             "downloaded INTEGER, failed_tiles INTEGER, min_zoom INTEGER, max_zoom INTEGER,"
             "point_count INTEGER, bounds TEXT, error TEXT, file_name TEXT,"
             "file_size INTEGER, blocked_count INTEGER, failed_details TEXT,"
-            "output_format TEXT DEFAULT 'mbtiles')"
+            "output_format TEXT DEFAULT 'mbtiles', tile_layer TEXT DEFAULT 'windy')"
         )
         conn.commit()
         conn.close()
@@ -127,11 +129,14 @@ class TaskManager:
         if "output_format" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN output_format TEXT DEFAULT 'mbtiles'")
             conn.commit()
+        if "tile_layer" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN tile_layer TEXT DEFAULT 'windy'")
+            conn.commit()
         rows = conn.execute(
             "SELECT id, status, created_at, updated_at, finished_at, name, params,"
             " total_tiles, downloaded, failed_tiles, min_zoom, max_zoom, point_count,"
             " bounds, error, file_name, file_size, blocked_count, failed_details,"
-            " output_format FROM tasks"
+            " output_format, tile_layer FROM tasks"
         ).fetchall()
         conn.close()
         now = time.time()
@@ -139,7 +144,7 @@ class TaskManager:
             (task_id, status, created_at, updated_at, finished_at, name, params,
              total_tiles, downloaded, failed_tiles, min_zoom, max_zoom, point_count,
              bounds, error, file_name, file_size, blocked_count, failed_details,
-             output_format) = row
+             output_format, tile_layer) = row
             try:
                 bounds_list = json.loads(bounds or "[]")
             except Exception:
@@ -163,6 +168,7 @@ class TaskManager:
                 can_download=(status == COMPLETED),
                 failed_details=failed_details_list,
                 output_format=(output_format or "mbtiles"),
+                tile_layer=(tile_layer or "windy"),
             )
             # 历史保留：完成的成品文件不自动删除；
             # 文件若被手动移除则标记不可下载，状态仍为 completed
@@ -190,15 +196,16 @@ class TaskManager:
             "INSERT OR REPLACE INTO tasks (id, status, created_at, updated_at,"
             " finished_at, name, params, total_tiles, downloaded, failed_tiles,"
             " min_zoom, max_zoom, point_count, bounds, error, file_name,"
-            " file_size, blocked_count, failed_details, output_format)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " file_size, blocked_count, failed_details, output_format, tile_layer)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (task.id, task.status, task.created_at, task.updated_at,
              task.finished_at, task.name, json.dumps(task.params),
              task.total_tiles, task.downloaded, task.failed_tiles,
              task.min_zoom, task.max_zoom, task.point_count,
              json.dumps(task.bounds), task.error, task.file_name,
              task.file_size, task.blocked_count,
-             json.dumps(task.failed_details[-200:]), task.output_format))
+             json.dumps(task.failed_details[-200:]), task.output_format,
+             task.tile_layer))
         conn.commit()
         conn.close()
 
@@ -238,9 +245,11 @@ class TaskManager:
                     f"同时运行任务数已达上限（{self.settings.max_running_tasks}），请稍后重试")
 
         now = time.time()
+        tile_layer = str(params.get("tile_layer") or "windy")
         task = Task(
             id=task_id, status=QUEUED, created_at=now, updated_at=now,
             name=params.get("name") or "track",
+            tile_layer=tile_layer,
             params={
                 "buffer_meters": params.get("buffer_meters", 2500),
                 "min_zoom": params.get("min_zoom", 8),
@@ -249,6 +258,8 @@ class TaskManager:
                 "interval_ms": params.get("interval_ms"),
                 "output_format": params.get("output_format", "gpkg"),
                 "allow_oversize": bool(params.get("allow_oversize")),
+                "tile_layer": tile_layer,
+                "custom_name": str(params.get("custom_name") or "").strip(),
             },
         )
         # 先落盘 GPX
@@ -282,6 +293,12 @@ class TaskManager:
         if task.status == CANCELLED:
             return
         settings = self.settings
+        # 解析瓦片图层提供者（默认 windy）
+        tile_layer = str(task.params.get("tile_layer") or task.tile_layer or "windy")
+        provider = settings.tile_providers.get(tile_layer)
+        if provider is None:
+            raise GpxParseError(f"不支持的瓦片图层：{tile_layer}")
+        task.tile_layer = tile_layer
         task.status = DOWNLOADING
         task.updated_at = time.time()
         self._save_task(task)
@@ -290,7 +307,7 @@ class TaskManager:
         task.cancel_event = cancel_event  # 供 cancel() 使用
         start = time.monotonic()
         timeout = settings.task_timeout_seconds
-        fetcher = TileFetcher(settings)
+        fetcher = None  # 在 eff_settings 构建后再创建（需 provider 特定的 URL/UA/Referer）
         try:
             # 1. 解析 GPX（轨迹名缺失时保留上传文件名）
             gpx_bytes = self.input_gpx_path(task.id).read_bytes()
@@ -307,6 +324,8 @@ class TaskManager:
             max_zoom = int(task.params["max_zoom"])
             min_zoom = max(settings.zoom_min_cap, min(min_zoom, settings.zoom_max_cap))
             max_zoom = max(settings.zoom_min_cap, min(max_zoom, settings.zoom_max_cap))
+            # 按瓦片源限制最大缩放（如 OpenTopoMap 仅到 z17）
+            max_zoom = min(max_zoom, provider.max_zoom)
             if min_zoom > max_zoom:
                 raise GpxParseError(f"缩放范围无效：{min_zoom}~{max_zoom}")
 
@@ -351,7 +370,8 @@ class TaskManager:
             if output_format not in ("gpkg", "mbtiles"):
                 raise GpxParseError(f"不支持的输出格式：{output_format}")
             task.output_format = output_format
-            eff_settings = _derived_settings(settings, concurrency, interval_ms)
+            eff_settings = _derived_settings(settings, concurrency, interval_ms, provider)
+            fetcher = TileFetcher(eff_settings)
             # 清理上次中断残留的中间文件（重启恢复场景），保证全新写入
             for leftover in ("work.gpkg", "work.gpkg-wal", "work.gpkg-shm",
                              "work.mbtiles", "work.mbtiles-wal", "work.mbtiles-shm"):
@@ -432,7 +452,9 @@ class TaskManager:
                 out_path = self.output_path(task.id, output_format)
                 work_path.rename(out_path)
                 ext = "gpkg" if output_format == "gpkg" else "mbtiles"
-                task.file_name = f"{task.id}.{ext}"
+                base = task.params.get("custom_name") or task.name
+                safe_base = "".join(c for c in str(base) if c.isalnum() or c in "-_")[:80] or "track"
+                task.file_name = f"{safe_base}_{tile_layer}.{ext}"
                 task.file_size = out_path.stat().st_size
                 if count == 0:
                     task.status = FAILED
@@ -457,7 +479,8 @@ class TaskManager:
             self._save_task(task)
             self._clean_task_files(task.id)
         finally:
-            await fetcher.close()
+            if fetcher is not None:
+                await fetcher.close()
             await asyncio.sleep(0)
 
     def _maybe_save_progress(self, task: Task, force: bool):
@@ -611,15 +634,22 @@ class TaskManager:
         self._cleanup_once()
 
 
-def _derived_settings(settings: Settings, concurrency: int, interval_ms: int):
-    """按任务参数覆盖并发与间隔的配置副本。"""
+def _derived_settings(settings: Settings, concurrency: int, interval_ms: int, provider):
+    """按任务参数与瓦片图层构建下载配置副本。"""
+    from .config import TileProvider
+    provider: TileProvider
     class _Derived:
         pass
     d = _Derived()
-    for attr in ("tile_url_template", "tile_proxy", "user_agent", "referer",
-                 "tile_timeout_seconds", "retry_max", "retry_backoff_base",
-                 "block_pause_seconds", "block_fail_min_count", "block_fail_ratio",
-                 "block_consecutive_threshold"):
+    # 图层相关：来自 provider
+    d.tile_url_template = provider.url_template
+    d.tile_subdomains = provider.subdomains
+    d.user_agent = provider.user_agent
+    d.referer = provider.referer
+    # 通用：来自全局 settings
+    for attr in ("tile_proxy", "tile_timeout_seconds", "retry_max",
+                 "retry_backoff_base", "block_pause_seconds", "block_fail_min_count",
+                 "block_fail_ratio", "block_consecutive_threshold"):
         setattr(d, attr, getattr(settings, attr))
     d.max_concurrency = concurrency
     d.request_interval_ms = interval_ms

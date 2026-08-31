@@ -75,6 +75,8 @@ async def submit(
     concurrency: int = Form(0),
     interval_ms: int = Form(0),
     output_format: str = Form("gpkg"),
+    tile_layer: str = Form("windy"),
+    custom_name: str = Form(""),
     allow_oversize: bool = Form(False),
 ):
     """提交任务：上传 GPX + 参数，返回 task_id。"""
@@ -98,6 +100,10 @@ async def submit(
     if output_format not in ("gpkg", "mbtiles"):
         return JSONResponse(status_code=400,
                             content={"detail": "output_format 仅支持 gpkg 或 mbtiles"})
+    tile_layer = tile_layer.strip().lower()
+    if tile_layer not in settings.tile_providers:
+        return JSONResponse(status_code=400,
+                            content={"detail": f"tile_layer 仅支持：{', '.join(settings.tile_providers)}"})
     allow_oversize_b = (bool(allow_oversize)
                         if isinstance(allow_oversize, bool)
                         else str(allow_oversize).lower() in ("1", "true", "yes", "on"))
@@ -109,6 +115,8 @@ async def submit(
         "concurrency": int(concurrency or 0),
         "interval_ms": int(interval_ms or 0),
         "output_format": output_format,
+        "tile_layer": tile_layer,
+        "custom_name": custom_name.strip(),
         "allow_oversize": allow_oversize_b,
     }
     try:
@@ -153,7 +161,8 @@ async def download(task_id: str):
     if not fp.exists():
         raise HTTPException(status_code=410, detail="文件已过期，请重新提交任务")
     ext = "gpkg" if task.output_format == "gpkg" else "mbtiles"
-    filename = f"{_safe_name(task.name)}.{ext}"
+    base = task.params.get("custom_name") or task.name
+    filename = f"{_safe_name(base)}_{task.tile_layer}.{ext}"
     media = ("application/geopackage+sqlite3"
              if ext == "gpkg" else "application/vnd.sqlite3")
     return FileResponse(

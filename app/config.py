@@ -32,6 +32,18 @@ DEFAULT_IPHONE_UA = (
 )
 
 
+@dataclass
+class TileProvider:
+    """瓦片图层提供者：URL 模板、子域名轮询、UA/Referer、最大缩放。"""
+    key: str
+    label: str
+    url_template: str
+    subdomains: tuple = ()
+    user_agent: str = DEFAULT_IPHONE_UA
+    referer: str = ""
+    max_zoom: int = 17
+
+
 class Settings:
     def __init__(self):
         data_dir = os.getenv("DATA_DIR", "./data")
@@ -75,6 +87,31 @@ class Settings:
         self.max_gpx_bytes = _env_int("MAX_GPX_BYTES", 52428800, 1024, 1073741824)
         self.disk_min_free_bytes = _env_int("DISK_MIN_FREE_BYTES", 104857600, 10485760, 1099511627776)
         self.auth_token = os.getenv("AUTH_TOKEN", "").strip()
+
+        # 瓦片图层注册表：windy 为默认（兼容现有 env 覆盖），opentopomap 为新增地形图
+        self.tile_providers: dict[str, TileProvider] = {
+            "windy": TileProvider(
+                key="windy",
+                label="Windy 户外",
+                url_template=self.tile_url_template,
+                user_agent=self.user_agent,
+                referer=self.referer,
+                max_zoom=18,
+            ),
+            "opentopomap": TileProvider(
+                key="opentopomap",
+                label="OpenTopoMap 地形图",
+                url_template="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+                subdomains=("a", "b", "c"),
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+                referer="https://opentopomap.org/",
+                max_zoom=17,
+            ),
+        }
+        self.default_tile_layer = "windy"
 
 
 _settings: Settings | None = None

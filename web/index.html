@@ -16,7 +16,7 @@
   .card h2 { font-size:14px; margin:0 0 10px; color:#9fc2e8; font-weight:600; }
   label { font-size:13px; color:#a9bccb; display:block; margin:10px 0 4px; }
   input[type=file] { width:100%; font-size:13px; }
-  input[type=number], select { width:100%; background:#0f1822; border:1px solid var(--line); color:#e8eef4;
+  input[type=number], input[type=text], select { width:100%; background:#0f1822; border:1px solid var(--line); color:#e8eef4;
     border-radius:9px; padding:9px 10px; font-size:15px; }
   .row2 { display:flex; gap:10px; }
   .row2 > div { flex:1; }
@@ -79,6 +79,13 @@
     <option value="gpkg" selected>GeoPackage (.gpkg) — Avenza 底图</option>
     <option value="mbtiles">MBTiles (.mbtiles) — Guru Maps 等</option>
   </select>
+  <label>瓦片图层</label>
+  <select id="tileLayer">
+    <option value="windy" selected>Windy 户外（默认）</option>
+    <option value="opentopomap">OpenTopoMap 地形图</option>
+  </select>
+  <label>自定义文件名 <span class="hint">（不填则用轨迹名；自动追加图层后缀）</span></label>
+  <input type="text" id="customName" placeholder="例如：麦理浩径二段" maxlength="80">
   <div class="row2">
     <div><label>瓦片并发数</label><input type="number" id="concurrency" value="6" min="1" max="16" step="1"></div>
     <div><label>请求间隔（毫秒）</label><input type="number" id="interval" value="100" min="0" max="5000" step="50"></div>
@@ -98,6 +105,7 @@
 <div class="card" id="taskCard" style="display:none">
   <h2>4 · 任务进度</h2>
   <div class="stat"><span>轨迹</span><b id="stName">-</b></div>
+  <div class="stat"><span>瓦片图层</span><b id="stLayer">-</b></div>
   <div class="stat"><span>任务状态</span><span id="stBadge" class="status-badge st-queued">排队中</span></div>
   <div class="stat"><span>总瓦片数</span><b id="stTotal">-</b></div>
   <div class="stat"><span>已下载</span><b id="stDone">-</b></div>
@@ -248,6 +256,8 @@
     fd.append('concurrency', document.getElementById('concurrency').value);
     fd.append('interval_ms', document.getElementById('interval').value);
     fd.append('output_format', document.getElementById('outputFormat').value);
+    fd.append('tile_layer', document.getElementById('tileLayer').value);
+    fd.append('custom_name', document.getElementById('customName').value.trim());
     return fd;
   }
 
@@ -297,6 +307,7 @@
 
   // ---------- 轮询 ----------
   var ST = { queued:'排队中', downloading:'下载中', completed:'已完成', failed:'失败', cancelled:'已取消' };
+  var LAYER_LABEL = { windy:'Windy 户外', opentopomap:'OpenTopoMap 地形图' };
   function startPolling() {
     stopPolling();
     pollOnce();
@@ -316,6 +327,7 @@
 
   function render(s) {
     document.getElementById('stName').textContent = s.name || '-';
+    document.getElementById('stLayer').textContent = LAYER_LABEL[s.tile_layer] || s.tile_layer || '-';
     document.getElementById('stBadge').textContent = ST[s.status] || s.status;
     document.getElementById('stBadge').className = 'status-badge st-' + s.status;
     document.getElementById('stTotal').textContent = fmt(s.total_tiles);
@@ -378,7 +390,9 @@
           var dateStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
             ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
           var badge = ST[t.status] || t.status;
-          var info = '🧭 ' + escapeHtml(t.name || 'track') + ' · ' + dateStr +
+          var layerLabel = LAYER_LABEL[t.tile_layer] || t.tile_layer || '';
+          var info = '🧭 ' + escapeHtml(t.name || 'track') +
+            (layerLabel ? ' · ' + layerLabel : '') + ' · ' + dateStr +
             ' · ' + badge + (t.total_tiles ? ' · ' + t.total_tiles.toLocaleString() + '瓦片' : '');
           var btns = '';
           if (t.status === 'completed' && t.file_available) {
