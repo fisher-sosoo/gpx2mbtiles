@@ -45,12 +45,18 @@ app = FastAPI(title="GPX-to-MBTiles", version="1.0.0", lifespan=lifespan)
 
 
 def require_api_key(request: Request):
-    """AUTH_TOKEN 为空时放行；否则要求 X-API-Key 或 Bearer 鉴权。"""
+    """AUTH_TOKEN 为空时放行；否则要求 X-API-Key、Bearer 或 URL 查询参数 token 之一匹配。
+
+    URL 查询参数 token 用于前端 <a href> 原生下载（浏览器导航不携带自定义请求头）。
+    """
     if not settings.auth_token:
         return True
     supplied = request.headers.get("X-API-Key") or ""
     auth = request.headers.get("Authorization") or ""
-    if supplied != settings.auth_token and auth != f"Bearer {settings.auth_token}":
+    query_token = request.query_params.get("token") or ""
+    if (supplied != settings.auth_token
+            and auth != f"Bearer {settings.auth_token}"
+            and query_token != settings.auth_token):
         raise HTTPException(status_code=401, detail="需要 API Key（X-API-Key 请求头）")
     return True
 

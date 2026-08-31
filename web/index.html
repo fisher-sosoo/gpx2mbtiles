@@ -149,6 +149,38 @@
     });
   }
 
+  // 确保有 API Key（没有则弹窗输入并保存）
+  function ensureApiKey() {
+    if (API_KEY) return true;
+    var key = prompt('请输入服务端 API Key（AUTH_TOKEN）：', '');
+    if (key === null) return false;
+    API_KEY = key.trim();
+    localStorage.setItem('gpx2mbtiles_key', API_KEY);
+    return !!API_KEY;
+  }
+  function downloadHref(url) {
+    var sep = url.indexOf('?') >= 0 ? '&' : '?';
+    return url + sep + 'token=' + encodeURIComponent(API_KEY);
+  }
+
+  // 下载按钮：原生导航下载（URL 带 token），兼容 iOS/Android/PC
+  document.getElementById('downloadBtn').addEventListener('click', function (e) {
+    e.preventDefault();
+    var url = this.getAttribute('data-url');
+    if (!url) return;
+    if (!ensureApiKey()) return;
+    window.location.href = downloadHref(url);
+  });
+  // 历史列表下载链接：事件委托
+  document.addEventListener('click', function (e) {
+    var dl = e.target && e.target.closest ? e.target.closest('.hist-dl') : null;
+    if (dl) {
+      e.preventDefault();
+      if (!ensureApiKey()) return;
+      window.location.href = downloadHref(dl.getAttribute('data-url'));
+    }
+  });
+
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -301,8 +333,8 @@
       var ext = s.output_format === 'mbtiles' ? '.mbtiles' : '.gpkg';
       if (s.file_available) {
         a.style.display = 'inline-block';
-        a.href = s.download_url;
-        a.setAttribute('download', s.file_name || ('track' + ext));
+        a.setAttribute('data-url', s.download_url);
+        a.setAttribute('data-name', s.file_name || ('track' + ext));
         document.getElementById('downloadBtnLabel').textContent =
           '⬇️ 下载 ' + (s.output_format === 'mbtiles' ? '.mbtiles' : '.gpkg');
       } else {
@@ -350,8 +382,8 @@
             ' · ' + badge + (t.total_tiles ? ' · ' + t.total_tiles.toLocaleString() + '瓦片' : '');
           var btns = '';
           if (t.status === 'completed' && t.file_available) {
-            btns += '<a class="hist-btn hist-dl" href="' + escapeHtml(t.download_url) +
-              '" download>下载</a>';
+            btns += '<a class="hist-btn hist-dl" data-url="' + escapeHtml(t.download_url) +
+              '" data-name="' + escapeHtml(t.file_name || 'track') + '">下载</a>';
           }
           btns += '<button class="hist-btn hist-del" data-id="' + escapeHtml(t.task_id) + '">删除</button>';
           item.innerHTML = '<div class="hist-main">' + info + '</div>' +
