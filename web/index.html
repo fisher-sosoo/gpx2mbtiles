@@ -265,8 +265,13 @@
     apiFetch('/api/submit', { method: 'POST', body: fd })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
+        var btn = document.getElementById('submitBtn');
+        btn.disabled = false;
+        btn.textContent = '🚀 提交生成任务';
         if (!res.ok) { showErr('提交失败：' + (res.j.detail || JSON.stringify(res.j))); return; }
         state.taskId = res.j.task_id;
+        // 弹窗确认，防止误以为没反应而重复点击提交
+        alert('✅ 任务已提交\n任务ID：' + state.taskId + '\n正在后台生成地图，可刷新页面查看进度');
         // 地址刷新为带任务 ID，便于锁屏/刷新后恢复查看与下载
         history.pushState(null, '', '?task=' + encodeURIComponent(state.taskId));
         document.getElementById('taskCard').style.display = 'block';
@@ -277,32 +282,45 @@
         startPolling();
         refreshHistory();
       })
-      .catch(function (e) { showErr('网络错误：' + e); });
+      .catch(function (e) {
+        var btn = document.getElementById('submitBtn');
+        btn.disabled = false;
+        btn.textContent = '🚀 提交生成任务';
+        showErr('网络错误：' + e);
+      });
   }
 
   document.getElementById('submitBtn').addEventListener('click', function () {
     var f = fileInput.files[0];
     if (!f) { showErr('请先选择 GPX 文件'); return; }
     clearErr();
+    // 点击后立即反馈并禁用按钮，防止连点重复提交
+    var btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 提交中…';
+    function restoreBtn() {
+      btn.disabled = false;
+      btn.textContent = '🚀 提交生成任务';
+    }
     var fd = buildForm();
     // 预估瓦片数
     apiFetch('/api/estimate', { method: 'POST', body: fd })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        if (!res.ok) { showErr('参数错误：' + (res.j.detail || JSON.stringify(res.j))); return; }
+        if (!res.ok) { restoreBtn(); showErr('参数错误：' + (res.j.detail || JSON.stringify(res.j))); return; }
         var tiles = res.j.tiles;
         if (res.j.exceeds_limit) {
           var go = confirm(
             '预计需要 ' + tiles.toLocaleString() + ' 张瓦片，超过单任务上限（' +
             res.j.max_tiles_per_task.toLocaleString() + '）。\n继续生成耗时和流量会比较大，确定继续吗？');
-          if (!go) return;
+          if (!go) { restoreBtn(); return; }
           fd.append('allow_oversize', 'true');
         } else {
           console.log('预计瓦片数：' + tiles.toLocaleString());
         }
         doSubmit(fd);
       })
-      .catch(function (e) { showErr('预估失败：' + e.message); });
+      .catch(function (e) { restoreBtn(); showErr('预估失败：' + e.message); });
   });
 
   // ---------- 轮询 ----------
