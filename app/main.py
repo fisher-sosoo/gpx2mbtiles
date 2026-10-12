@@ -4,13 +4,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .gpx_processor import GpxParseError, build_tile_plan, parse_gpx
 from .task_manager import (COMPLETED, TaskLimitError, TaskManager,
                            TaskNotFoundError)
+from .tile_cache import TileCache, valid_xyz
+from .tile_downloader import TileBlocked, TileFetcher, TileHttpError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,15 +23,18 @@ logger = logging.getLogger("gpx2mbtiles")
 
 settings = get_settings()
 manager: TaskManager
+tile_cache: TileCache
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global manager
+    global manager, tile_cache
     manager = TaskManager(settings)
     manager.start()
+    tile_cache = TileCache(settings)
     cleanup_task = asyncio.create_task(manager.cleanup_loop())
     app.state.manager = manager
+    app.state.tile_cache = tile_cache
     logger.info("gpx2mbtiles started: data_dir=%s max_running=%d interval=%dms",
                 settings.data_dir, settings.max_running_tasks, settings.request_interval_ms)
     yield
@@ -64,6 +70,107 @@ def require_api_key(request: Request):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "max_running": settings.max_running_tasks}
+
+
+# ---------------------------------------------------------------- 瓦片代理
+# 前端直接把这些 URL 交给 Leaflet：/api/tile/windy/{z}/{x}/{y}
+#
+# 为什么要走服务端：Windy 的响应头 credentials:true + origin:* 违反 CORS 规范，
+# 浏览器直接请求会被判 ERR_BLOCKED_BY_ORB，底图整片空白。服务端代取后同源返回。
+#
+# 缓存：命中直接回盘上文件；未命中回源并落盘。容量超限按 LRU 淘汰。
+
+_tile_fetcher = None
+_tile_fetch_lock: asyncio.Lock | None = None
+
+
+def _get_tile_fetcher():
+    """懒建一个共享的 TileFetcher（沿用 .env 里的 UA/Referer/代理）。"""
+    global _tile_fetcher, _tile_fetch_lock
+    if _tile_fetch_lock is None:
+        _tile_fetch_lock = asyncio.Lock()
+    if _tile_fetcher is None:
+        _tile_fetcher = TileFetcher(settings)
+    return _tile_fetcher
+
+
+@app.get("/api/tile/{layer}/{z}/{x}/{y}")
+async def get_tile(layer: str, z: int, x: int, y: int):
+    """瓦片代理：同源返回，带磁盘缓存。
+
+    不加 require_api_key：Leaflet 的 <img> 请求带不了自定义头，
+    而这里只代理白名单图层、且只读公开瓦片，无敏感信息。
+    """
+    layer = layer.strip().lower()
+    if layer not in settings.tile_proxy_layers:
+        raise HTTPException(status_code=404, detail="该图层未开放代理")
+    if not valid_xyz(z, x, y):
+        raise HTTPException(status_code=400, detail="瓦片坐标越界")
+
+    # 1) 命中缓存
+    cached = tile_cache.get(layer, z, x, y)
+    if cached is not None:
+        return Response(
+            content=cached,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=604800",
+                     "X-Tile-Cache": "HIT"},
+        )
+
+    # 2) 回源（按图层切换 settings 里的模板）
+    fetcher = _get_tile_fetcher()
+    async with _tile_fetch_lock:
+        if fetcher._session is None:
+            await fetcher.open()
+        provider = settings.tile_providers[layer]
+        # TileFetcher 默认用 settings 的模板；这里临时换成本图层
+        old_tpl, old_subs = settings.tile_url_template, getattr(settings, "tile_subdomains", ())
+        old_ua, old_ref = settings.user_agent, settings.referer
+        settings.tile_url_template = provider.url_template
+        settings.tile_subdomains = provider.subdomains
+        settings.user_agent = provider.user_agent
+        settings.referer = provider.referer
+        try:
+            # 换过 UA/Referer 需要重建 session 头
+            await fetcher.close()
+            await fetcher.open()
+            body = await fetcher.fetch(z, x, y)
+        except TileBlocked as exc:
+            logger.warning("tile blocked by upstream: %s/%s/%s/%s status=%s",
+                           layer, z, x, y, exc.status)
+            raise HTTPException(status_code=503,
+                                detail="上游限流，请稍后重试（可降低底图加载速度）")
+        except TileHttpError as exc:
+            raise HTTPException(status_code=502 if exc.status != 404 else 404,
+                                detail=f"上游返回 {exc.status}")
+        finally:
+            settings.tile_url_template = old_tpl
+            settings.tile_subdomains = old_subs
+            settings.user_agent = old_ua
+            settings.referer = old_ref
+            await fetcher.close()
+
+    # 3) 落盘并返回
+    tile_cache.put(layer, z, x, y, body)
+    return Response(
+        content=body,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=604800",
+                 "X-Tile-Cache": "MISS"},
+    )
+
+
+@app.get("/api/tilecache/stats")
+async def tilecache_stats():
+    """缓存用量，便于观察磁盘占用。"""
+    return tile_cache.stats()
+
+
+@app.post("/api/tilecache/evict", dependencies=[Depends(require_api_key)])
+async def tilecache_evict():
+    """手动触发一次 LRU 清理。"""
+    removed = tile_cache.evict()
+    return {"removed": removed, **tile_cache.stats()}
 
 
 @app.post("/api/submit", dependencies=[Depends(require_api_key)])

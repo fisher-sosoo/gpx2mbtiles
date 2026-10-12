@@ -88,6 +88,22 @@ class Settings:
         self.disk_min_free_bytes = _env_int("DISK_MIN_FREE_BYTES", 104857600, 10485760, 1099511627776)
         self.auth_token = os.getenv("AUTH_TOKEN", "").strip()
 
+        # ---- 瓦片代理缓存（/api/tile/...）----
+        # 浏览器直接请求 Windy 会被 CORS 拦（响应头 credentials:true 与 origin:*
+        # 并存，违反规范，Chrome 报 ERR_BLOCKED_BY_ORB）。改由服务端代取，
+        # 同源返回并落盘缓存，重复浏览不再消耗流量。
+        self.tile_cache_enabled = os.getenv("TILE_CACHE_ENABLED", "1").strip().lower()             not in ("0", "false", "no", "off")
+        # 缓存总容量上限（默认 2GB；服务器 40G 盘，留足余量给成品文件）
+        self.tile_cache_max_bytes = _env_int(
+            "TILE_CACHE_MAX_BYTES", 2147483648, 10485760, 107374182400)
+        # 单张瓦片超过此大小不缓存（防止异常响应撑爆磁盘）
+        self.tile_cache_max_tile_bytes = _env_int(
+            "TILE_CACHE_MAX_TILE_BYTES", 5242880, 10240, 52428800)
+        # 允许代理的图层：仅这些 key 可通过 /api/tile/ 访问
+        self.tile_proxy_layers = tuple(
+            x.strip() for x in os.getenv("TILE_PROXY_LAYERS", "windy").split(",") if x.strip()
+        )
+
         # 瓦片图层注册表：windy 为默认（兼容现有 env 覆盖），opentopomap 为新增地形图
         self.tile_providers: dict[str, TileProvider] = {
             "windy": TileProvider(
