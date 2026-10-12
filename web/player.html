@@ -96,8 +96,15 @@
   .mt-btn:hover { background:#243547; }
   .mt-btn.on { background:var(--accent); color:#06233f; border-color:var(--accent); }
   .legend { position:absolute; left:12px; bottom:22px; z-index:500; background:#0e141bdd;
-            border:1px solid var(--line); border-radius:10px; padding:9px 12px;
-            font-size:12px; line-height:1.65; backdrop-filter:blur(6px); max-width:280px; }
+            border:1px solid var(--line); border-radius:10px; padding:22px 12px 9px;
+            font-size:12px; line-height:1.65; backdrop-filter:blur(6px);
+            min-width:150px; min-height:70px; max-width:80vw; max-height:70vh;
+            overflow:auto; resize:both; }
+  .legend-head { position:absolute; left:0; right:0; top:0; height:20px; cursor:move;
+                 display:flex; align-items:center; justify-content:space-between;
+                 padding:0 8px; font-size:10px; color:#6b7f92;
+                 background:#ffffff0d; border-radius:10px 10px 0 0; user-select:none; }
+  .legend-head:hover { color:#9fc2e8; background:#ffffff14; }
   .legend .li { display:flex; align-items:center; gap:7px; }
   .legend .li .sw-line { width:20px; height:3px; border-radius:2px; flex-shrink:0; }
   .legend .li .sw-dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; border:2px solid #fff6; }
@@ -254,7 +261,10 @@
       <button class="mt-btn" id="mtLegend">图例</button>
       <button class="mt-btn" id="mtTitle">标题</button>
     </div>
-    <div class="legend" id="legend" style="display:none"></div>
+    <div class="legend" id="legend" style="display:none">
+      <div class="legend-head" id="legendHead"><span>⠿ 图例</span><span style="font-size:9px">拖动手柄 / 右下角缩放</span></div>
+      <div id="legendBody"></div>
+    </div>
   </div>
 
 </div>
@@ -296,6 +306,8 @@
     base: 'windy',
     baseOpacity: 1,
     showLegend: false,
+    legendPos: null,
+    legendSize: null,
     title: '',
     markerMode: false,
     pickMode: false,
@@ -936,6 +948,7 @@
   function renderLegend() {
     var el = document.getElementById('legend');
     if (!state.showLegend) { el.style.display = 'none'; return; }
+    var body = document.getElementById('legendBody');
     var html = '';
     if (state.title) html += '<div class="sum">' + esc(state.title) + '</div>';
     var shown = state.tracks.filter(function (t) { return t.visible; });
@@ -954,9 +967,69 @@
       });
       if (state.marks.length > 14) html += '<div class="li" style="color:#8aa0b4">…还有 ' + (state.marks.length - 14) + ' 个</div>';
     }
-    el.innerHTML = html || '<div style="color:#8aa0b4">暂无内容</div>';
+    body.innerHTML = html || '<div style="color:#8aa0b4">暂无内容</div>';
     el.style.display = 'block';
   }
+  // 图例可自由拖动、可缩放（右下角拉伸）
+  function initLegendDrag() {
+    var el = document.getElementById('legend');
+    var head = document.getElementById('legendHead');
+    var dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+    head.addEventListener('mousedown', function (e) {
+      // 只在还没脱离默认定位时切换为绝对定位
+      if (el.style.left === 'auto' || el.style.left === '') {
+        var r0 = el.getBoundingClientRect();
+        var pr = el.parentNode.getBoundingClientRect();
+        el.style.left = (r0.left - pr.left) + 'px';
+        el.style.top = (r0.top - pr.top) + 'px';
+        el.style.bottom = 'auto';
+      }
+      dragging = true;
+      sx = e.clientX; sy = e.clientY;
+      ox = parseFloat(el.style.left) || 0;
+      oy = parseFloat(el.style.top) || 0;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      el.style.left = (ox + e.clientX - sx) + 'px';
+      el.style.top = (oy + e.clientY - sy) + 'px';
+    });
+    document.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      state.legendPos = { left: el.style.left, top: el.style.top };
+      save();
+    });
+    // 右下角拉伸后记录尺寸（ResizeObserver 在现代浏览器可用）
+    if (typeof ResizeObserver !== 'undefined') {
+      var t = null;
+      new ResizeObserver(function () {
+        if (!state.showLegend) return;
+        clearTimeout(t);
+        t = setTimeout(function () {
+          var r0 = el.getBoundingClientRect();
+          state.legendSize = { w: Math.round(r0.width), h: Math.round(r0.height) };
+          save();
+        }, 400);
+      }).observe(el);
+    }
+  }
+
+  function restoreLegendPos() {
+    var el = document.getElementById('legend');
+    if (state.legendPos && state.legendPos.left && state.legendPos.top) {
+      el.style.left = state.legendPos.left;
+      el.style.top = state.legendPos.top;
+      el.style.bottom = 'auto';
+    }
+    if (state.legendSize && state.legendSize.w && state.legendSize.h) {
+      el.style.width = state.legendSize.w + 'px';
+      el.style.height = state.legendSize.h + 'px';
+    }
+  }
+
   function toggleLegend() {
     state.showLegend = !state.showLegend;
     document.getElementById('mtLegend').classList.toggle('on', state.showLegend);
@@ -1147,92 +1220,265 @@
   // ================================================================
   //  导出：PNG 截图 / GPX / JSON
   // ================================================================
-  var HTML2CANVAS = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
-
-  function cloneWithStyles(src, dst) {
-    var cs = getComputedStyle(src);
-    for (var i = 0; i < cs.length; i++) {
-      var p = cs[i];
-      try { dst.style.setProperty(p, cs.getPropertyValue(p), cs.getPropertyPriority(p)); } catch (e) {}
-    }
-    dst.style.margin = '0';
-    var sc = src.children, dc = dst.children;
-    for (var j = 0; j < sc.length; j++) cloneWithStyles(sc[j], dc[j]);
+  // 自己按地理坐标绘制整张图，不再依赖 html2canvas 解释 Leaflet 的 DOM。
+  // 原因：轨迹是 SVG <path>，html2canvas 对跨 pane 的 SVG 支持很差，
+  // 结果是「只有底图和文字、轨迹整条丢失」；同时它还会把左上角的缩放
+  // 控件一起画进去。直接绘制反而更准、更可控。
+  function projectPoint(lat, lng, zoom, originPx) {
+    var scale = 256 * Math.pow(2, zoom);
+    var x = (lng + 180) / 360 * scale;
+    var s = Math.sin(lat * Math.PI / 180);
+    var y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * scale;
+    return [x - originPx.x, y - originPx.y];
   }
 
   async function exportPng() {
     var btn = document.getElementById('btnPng');
     btn.disabled = true; btn.textContent = '⏳ 渲染中…';
     try {
-      if (typeof html2canvas === 'undefined') await loadScript(HTML2CANVAS);
       var scale = parseFloat(document.getElementById('pngScale').value) || 2;
-      var src = document.getElementById('map');
-      var rect = src.getBoundingClientRect();
-      var w = Math.max(320, Math.round(rect.width)), h = Math.max(240, Math.round(rect.height));
+      var mapEl = document.getElementById('map');
+      var rect = mapEl.getBoundingClientRect();
+      var w = Math.max(320, Math.round(rect.width));
+      var h = Math.max(240, Math.round(rect.height));
 
-      // 重建一份静态 DOM 快照：避免 html2canvas 处理 canvas 跨域瓦片时直接失败
-      var holder = document.createElement('div');
-      holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:' + w + 'px;height:' + h +
-        'px;overflow:hidden;background:#0d131a';
-      var clone = src.cloneNode(true);
-      clone.style.width = w + 'px'; clone.style.height = h + 'px';
-      clone.style.position = 'relative'; clone.style.inset = 'auto';
-      holder.appendChild(clone);
-      // 把原地图的浮层（标题/图例）也带上
-      var extra = document.getElementById('mapWrap');
-      ['mapTitleEl', 'legend'].forEach(function (id) {
-        var e = document.getElementById(id);
-        if (e && e.style.display !== 'none' && e.offsetParent !== null) {
-          var c = e.cloneNode(true);
-          holder.appendChild(c);
-        }
-      });
-      document.body.appendChild(holder);
-      cloneWithStyles(src, clone);
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(h * scale);
+      var ctx = canvas.getContext('2d');
+      ctx.scale(scale, scale);
+      ctx.fillStyle = '#0d131a';
+      ctx.fillRect(0, 0, w, h);
 
-      // 用已加载的瓦片像素重绘 <img>，避开 canvas 污染
-      var imgs = src.querySelectorAll('.leaflet-tile');
-      var cimgs = clone.querySelectorAll('.leaflet-tile');
-      for (var i = 0; i < imgs.length && i < cimgs.length; i++) {
-        if (imgs[i].complete && imgs[i].naturalWidth > 0) {
-          try { cimgs[i].setAttribute('src', tileToDataURL(imgs[i])); } catch (e) {}
+      var zoom = map.getZoom();
+      var centerPx = map.project(map.getCenter(), zoom);
+      var originPx = { x: centerPx.x - w / 2, y: centerPx.y - h / 2 };
+
+      // ---- 1. 底图瓦片（直接用当前缩放级别的 256px 瓦片，整块贴图，绝不模糊）----
+      if (state.base !== 'none' && BASEMAPS[state.base]) {
+        ctx.globalAlpha = state.baseOpacity;
+        var tpl = layerUrlTemplate(state.base);
+        var tileSize = 256;
+        var minX = Math.floor(originPx.x / tileSize);
+        var maxX = Math.floor((originPx.x + w) / tileSize);
+        var minY = Math.floor(originPx.y / tileSize);
+        var maxY = Math.floor((originPx.y + h) / tileSize);
+        var n = Math.pow(2, zoom);
+        var jobs = [];
+        for (var tx = minX; tx <= maxX; tx++) {
+          for (var ty = minY; ty <= maxY; ty++) {
+            if (ty < 0 || ty >= n) continue;
+            var wx = ((tx % n) + n) % n;
+            jobs.push({
+              url: fillTileUrl(tpl, zoom, wx, ty),
+              dx: tx * tileSize - originPx.x,
+              dy: ty * tileSize - originPx.y
+            });
+          }
         }
+        var imgs = await Promise.all(jobs.map(function (j) {
+          return loadTileImage(j.url).catch(function () { return null; });
+        }));
+        imgs.forEach(function (im, i) {
+          if (!im) return;
+          ctx.drawImage(im, jobs[i].dx, jobs[i].dy, tileSize, tileSize);
+        });
+        ctx.globalAlpha = 1;
       }
 
-      var canvas = await html2canvas(holder, {
-        width: w, height: h, scale: scale, backgroundColor: '#0d131a',
-        useCORS: true, allowTaint: false, logging: false
+      // ---- 2. 轨迹（白描边 + 主线），与屏幕上同样的画法 ----
+      state.tracks.forEach(function (t) {
+        if (!t.visible || t.points.length < 2) return;
+        ctx.globalAlpha = t.opacity;
+        var pts = t.points.map(function (p) { return projectPoint(p.lat, p.lng, zoom, originPx); });
+        drawPolyline(ctx, pts, t.weight + 3, '#ffffff', 0.55 * t.opacity);
+        drawPolyline(ctx, pts, t.weight, t.color, t.opacity);
+        ctx.globalAlpha = 1;
       });
-      document.body.removeChild(holder);
 
-      var name = (state.title || '轨迹图').replace(/[\\/:*?"<>|]/g, '_');
+      // ---- 3. 方向箭头 / 里程桩等工具层 + 标记 ----
+      state.marks.forEach(function (m, i) {
+        var xy = projectPoint(m.lat, m.lng, zoom, originPx);
+        drawMarkGlyph(ctx, m, i, xy);
+      });
+
+      // ---- 4. 轨迹名称标注 ----
+      state.tracks.forEach(function (t) {
+        if (!t.visible || !t.showLabel || !t.points.length) return;
+        var mid = t.points[Math.floor(t.points.length / 2)];
+        var xy = projectPoint(mid.lat, mid.lng, zoom, originPx);
+        drawChip(ctx, t.name, xy[0], xy[1], t.color);
+      });
+
+      // ---- 5. 标记名称标注 ----
+      state.marks.forEach(function (m) {
+        if (!m.showLabel || !m.name) return;
+        var xy = projectPoint(m.lat, m.lng, zoom, originPx);
+        drawChip(ctx, m.name, xy[0], xy[1] - 26, m.color === '#ffffff' ? '#e8eef4' : m.color);
+      });
+
+      // ---- 6. 标题与图例（沿用页面上的 HTML 样式，但绘制到画布）----
+      if (state.title) {
+        ctx.font = '700 15px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+        var tw = ctx.measureText(state.title).width;
+        roundRect(ctx, 12, 10, tw + 24, 30, 9);
+        ctx.fillStyle = 'rgba(14,20,27,.88)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.stroke();
+        ctx.fillStyle = '#e8eef4';
+        ctx.fillText(state.title, 24, 30);
+      }
+      if (state.showLegend) drawLegendCanvas(ctx, w, h);
+
       canvas.toBlob(function (blob) {
         if (!blob) { alert('导出失败：画布为空'); return; }
+        var name = (state.title || '轨迹图').replace(/[\\/:*?"<>|]/g, '_');
         triggerDownload(blob, name + '.png');
       }, 'image/png');
     } catch (err) {
-      alert('导出 PNG 失败：' + (err && err.message ? err.message : err) +
-            '\n\n提示：若底图瓦片被浏览器标记为跨域，可先把底图切到「无底图」或降低倍率再试。');
+      alert('导出 PNG 失败：' + (err && err.message ? err.message : err));
     } finally {
       btn.disabled = false; btn.textContent = '📸 导出 PNG';
     }
   }
 
-  // 把已渲染的 <img> 瓦片画进 canvas 再取 dataURL —— 同源读取，不触发跨域限制
-  function tileToDataURL(img) {
-    var c = document.createElement('canvas');
-    c.width = img.naturalWidth; c.height = img.naturalHeight;
-    c.getContext('2d').drawImage(img, 0, 0);
-    return c.toDataURL('image/png');
+  function layerUrlTemplate(key) {
+    var b = BASEMAPS[key];
+    return b ? b.url : '';
+  }
+  function fillTileUrl(tpl, z, x, y) {
+    return tpl.replace('{z}', z).replace('{x}', x).replace('{y}', y)
+              .replace('{s}', 'abc'[(x + y) % 3]);
+  }
+  // 取瓦片像素：crossOrigin 已在图层上开启，缓存命中通常同源可用
+  function loadTileImage(url) {
+    return new Promise(function (res, rej) {
+      var im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.onload = function () { res(im); };
+      im.onerror = function () { rej(new Error('tile')); };
+      im.src = url;
+    });
   }
 
-  function loadScript(url) {
-    return new Promise(function (res, rej) {
-      var s = document.createElement('script');
-      s.src = url; s.onload = res;
-      s.onerror = function () { rej(new Error('无法加载 ' + url + '（检查网络/代理）')); };
-      document.head.appendChild(s);
+  function drawPolyline(ctx, pts, width, color, alpha) {
+    if (pts.length < 2) return;
+    ctx.save();
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // 带底色的文字标签（轨迹名 / 标记名）
+  function drawChip(ctx, text, cx, cy, color) {
+    if (!text) return;
+    ctx.save();
+    ctx.font = '600 11.5px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+    var tw = ctx.measureText(text).width;
+    var padX = 6, hgt = 18;
+    roundRect(ctx, cx - tw / 2 - padX, cy - hgt / 2, tw + padX * 2, hgt, 6);
+    ctx.fillStyle = 'rgba(14,20,27,.88)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = color || '#e8eef4';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, cy + 0.5);
+    ctx.restore();
+  }
+
+  function drawMarkGlyph(ctx, m, idx, xy) {
+    var size = m.kind === 'km' ? 7 : 10;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(xy[0], xy[1], size / 2, 0, Math.PI * 2);
+    if (m.kind === 'km') {
+      ctx.fillStyle = '#0e141b'; ctx.fill();
+      ctx.strokeStyle = m.color; ctx.lineWidth = 2; ctx.stroke();
+    } else {
+      ctx.fillStyle = m.color; ctx.fill();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();
+    }
+    ctx.restore();
+    var glyph = '';
+    if (m.kind === 'start') glyph = 'S';
+    else if (m.kind === 'end') glyph = 'E';
+    else if (m.kind === 'waypoint' || m.kind === 'poi') glyph = 'P';
+    else if (m.kind !== 'km' && m.seq) glyph = String(idx);
+    if (glyph) {
+      ctx.save();
+      ctx.font = '700 10px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(glyph, xy[0], xy[1] + 0.5);
+      ctx.restore();
+    }
+  }
+
+  function drawLegendCanvas(ctx, w, h) {
+    var rows = [];
+    state.tracks.filter(function (t) { return t.visible; }).forEach(function (t) {
+      var extra = [];
+      if (t.distance > 0) extra.push(fmtDist(t.distance));
+      if (t.ascent > 0) extra.push('↑' + Math.round(t.ascent) + 'm');
+      rows.push({ color: t.color, text: t.name + (extra.length ? ' · ' + extra.join(' · ') : ''), line: true });
     });
+    state.marks.slice(0, 14).forEach(function (m) {
+      rows.push({ color: m.color, text: m.name || '(未命名)', line: false });
+    });
+    if (!rows.length) return;
+
+    ctx.save();
+    ctx.font = '12px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+    var maxW = 0;
+    rows.forEach(function (r) { maxW = Math.max(maxW, ctx.measureText(r.text).width); });
+    var boxW = maxW + 54, lineH = 20, padY = 12;
+    var boxH = rows.length * lineH + padY * 2 + (state.title ? 20 : 0);
+    var bx = 12, by = h - boxH - 22;
+
+    roundRect(ctx, bx, by, boxW, boxH, 10);
+    ctx.fillStyle = 'rgba(14,20,27,.88)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.stroke();
+
+    var cy = by + padY;
+    if (state.title) {
+      ctx.fillStyle = '#9fc2e8';
+      ctx.font = '700 12.5px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(state.title, bx + 12, cy + 6);
+      cy += 20;
+    }
+    ctx.font = '12px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+    rows.forEach(function (r) {
+      var mx = bx + 16, my = cy + lineH / 2;
+      if (r.line) {
+        ctx.strokeStyle = r.color; ctx.lineWidth = 3; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx + 18, my); ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.arc(mx + 9, my, 5.5, 0, Math.PI * 2);
+        ctx.fillStyle = r.color; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      ctx.fillStyle = '#e8eef4';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(r.text, mx + 28, my);
+      cy += lineH;
+    });
+    ctx.restore();
   }
 
   function triggerDownload(blob, filename) {
@@ -1279,7 +1525,7 @@
     var data = {
       version: 1, savedAt: new Date().toISOString(), title: state.title,
       base: state.base, baseOpacity: state.baseOpacity, showLegend: state.showLegend,
-      tileSpeed: SPEED_KEY,
+      tileSpeed: SPEED_KEY, legendPos: state.legendPos, legendSize: state.legendSize,
       tracks: state.tracks.map(function (t) {
         return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
                  showLabel: t.showLabel, opacity: t.opacity,
@@ -1315,6 +1561,9 @@
     });
     state.title = d.title || '';
     state.showLegend = !!d.showLegend;
+    state.legendPos = d.legendPos || null;
+    state.legendSize = d.legendSize || null;
+    restoreLegendPos();
     if (d.tileSpeed && SPEED[d.tileSpeed]) {
       applySpeed(d.tileSpeed);
       var ss = document.getElementById('tileSpeed');
@@ -1339,6 +1588,7 @@
       try {
         var data = { version: 1, title: state.title, base: state.base,
           baseOpacity: state.baseOpacity, showLegend: state.showLegend, tileSpeed: SPEED_KEY,
+          legendPos: state.legendPos, legendSize: state.legendSize,
           tracks: state.tracks.map(function (t) {
             return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
                      showLabel: t.showLabel, opacity: t.opacity,
@@ -1647,6 +1897,7 @@
   // ================================================================
   initMap();
   bindUI();
+  initLegendDrag();
   if (load()) {
     document.getElementById('saveHint').textContent = '已从本地缓存恢复上次的轨迹与标记。';
   } else {

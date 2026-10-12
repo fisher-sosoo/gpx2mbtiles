@@ -1,4 +1,4 @@
-"""回放页（web/player.html）的前端回归测试。
+﻿"""回放页（web/player.html）的前端回归测试。
 
 这些测试不启动浏览器，只做静态检查 + 用 Node 打桩跑纯函数，
 目的是防止「改了 HTML 却把内联 JS 改出语法错误」这类问题重演
@@ -84,7 +84,8 @@ def test_player_has_core_features():
         "id=\"tileSpeed\"",                      # 瓦片加载速度档位
         "localStorage",                             # 本地持久化
         "exportGpx", "exportJson",                  # 导出
-        "html2canvas",                              # PNG 截图
+        "drawLegendCanvas", "drawPolyline",         # PNG 截图（直接绘制到 canvas）
+        "projectPoint",                             # 经纬度 -> 像素投影
     ):
         assert snippet in html, f"回放页缺少功能要素: {snippet}"
 
@@ -176,9 +177,10 @@ def test_player_libraries_from_official_cdn():
     """依赖库必须走官方 CDN，不用来路不明的第三方镜像。"""
     html = _read(PLAYER)
     assert "unpkg.com/leaflet@1.9.4" in html
-    assert "cdn.jsdelivr.net/npm/html2canvas" in html
     # Leaflet CSS 与 JS 版本必须一致，否则会出现渲染错位
     assert html.count("leaflet@1.9.4") == 2
+    # PNG 导出改为直接绘制到 canvas，不再引入 html2canvas
+    assert "html2canvas.min.js" not in html, "不应再依赖 html2canvas"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 不可用")
