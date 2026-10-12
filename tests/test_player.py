@@ -91,8 +91,61 @@ def test_player_does_not_touch_server_api():
 
 
 def test_index_links_to_player():
+    """生成器页 → 回放页的入口（生产环境经 Caddy 的 /gpx 前缀）。"""
     html = _read(INDEX)
-    assert '/player.html' in html, "生成器页面缺少进入回放页的入口"
+    assert '/gpx/player.html' in html, "生成器页面缺少进入回放页的入口"
+
+
+def test_player_links_back_to_generator():
+    html = _read(PLAYER)
+    assert 'href="/gpx/"' in html, "回放页应能返回生成器页（/gpx/）"
+
+
+def test_frontend_uses_gpx_prefix_consistently():
+    """页内跳转必须带 /gpx 前缀：生产环境根路径被门户主页占用。
+
+    例外：/api/* 是接口调用（Caddy 单独反代），CDN 是外部绝对地址。
+    """
+    for path in (INDEX, PLAYER):
+        html = _read(path)
+        refs = re.findall(r'href="(/[^"]*)"', html)
+        for ref in refs:
+            assert ref.startswith(("/gpx/", "/api/")), (
+                f"{path.name} 存在未走 /gpx 前缀的页内跳转: {ref}")
+
+
+# ---------------------------------------------------------------- 门户
+
+PORTAL = ROOT / "web" / "portal.html"
+CADDY = ROOT / "deploy" / "Caddyfile.portal"
+
+
+def test_portal_exists_and_links_services():
+    """门户主页必须存在并能进入两个服务。"""
+    assert PORTAL.is_file(), "缺少门户主页 web/portal.html"
+    html = _read(PORTAL)
+    assert 'href="/gpx/"' in html, "门户缺少 GPX 工具入口"
+    assert ":3000" in html, "门户缺少 Stronghold 游戏入口"
+
+
+def test_caddyfile_routes_are_correct():
+    """Caddy 配置必须把门户放根路径、gpx 工具放 /gpx。"""
+    assert CADDY.is_file(), "缺少 deploy/Caddyfile.portal"
+    cfg = _read(CADDY)
+    assert "handle /gpx/*" in cfg, "缺少 /gpx 路由"
+    assert "strip_prefix /gpx" in cfg, "/gpx 路由必须先剥离前缀再反代"
+    assert "handle /api/*" in cfg, "缺少 /api 路由（前端 fetch 走根路径）"
+    assert "127.0.0.1:8000" in cfg, "反代目标应为容器端口 8000"
+    assert "/srv/portal" in cfg, "门户静态目录应为 /srv/portal"
+    # 性能相关
+    assert "encode zstd gzip" in cfg, "缺少压缩配置"
+
+
+def test_main_mounts_both_prefixes():
+    """FastAPI 必须同时提供 / 与 /gpx，兼顾直连与反代。"""
+    src = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    assert 'app.mount("/gpx"' in src, "缺少 /gpx 静态挂载"
+    assert 'app.mount("/"' in src, "缺少 / 静态挂载"
 
 
 def test_player_libraries_from_official_cdn():

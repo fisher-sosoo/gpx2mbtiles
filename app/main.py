@@ -226,6 +226,13 @@ def _safe_name(name: str) -> str:
 
 
 # 静态前端（构建时复制到 web/）
+#
+# 同时挂载到 "/" 和 "/gpx" 两个前缀：
+#   - 直接访问 http://host:8000/          -> /         （容器内直连、本地开发）
+#   - 经 Caddy 反代 http://host/gpx/...   -> /gpx/...  （生产入口，避免与门户主页抢根路径）
+# 前端内部的绝对路径引用（fetch('/api/...')）不受前缀影响，因为 /api/* 始终挂在根上。
 static_dir = Path(__file__).resolve().parent.parent / "web"
 if static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="web")
+    _web = StaticFiles(directory=str(static_dir), html=True)
+    app.mount("/gpx", _web, name="web_gpx")
+    app.mount("/", _web, name="web")

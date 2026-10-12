@@ -1,0 +1,54 @@
+# =====================================================================
+#  服务门户反向代理
+#
+#  :80  ┬── /                → 门户主页（静态文件，含 zstd/gzip 压缩）
+#       ├── /gpx/*           → gpx2mbtiles 127.0.0.1:8000（生成器 + 回放页）
+#       └── /api/*           → gpx2mbtiles（前端 fetch 走根路径）
+#
+#  Stronghold Protocol 游戏继续走 :3000 —— 其前端全部为根路径绝对引用
+#  （/css /js /vendor /manifest.json）且无 base-path 支持，无法在子路径下
+#  工作，故不做路径反代。
+# =====================================================================
+
+:80 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# ---------- GPX 工具：页面 ----------
+	handle /gpx/* {
+		uri strip_prefix /gpx
+		reverse_proxy 127.0.0.1:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# ---------- GPX 工具：API（前端 fetch 用根路径） ----------
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# ---------- 门户主页（兜底） ----------
+	handle {
+		root * /srv/portal
+		header Cache-Control "no-cache"
+		file_server {
+			index index.html
+		}
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+		format console
+	}
+}

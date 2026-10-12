@@ -1,4 +1,4 @@
-﻿# 部署文档
+# 部署文档
 
 > 本文件记录 gpx2mbtiles 在云服务器的完整部署方案：架构、代理、自愈、安全加固、自动化部署与运维命令。
 > 适用范围：个人自用部署（阿里云 ECS · Alibaba Cloud Linux 3 · 墙内网络）。
@@ -6,14 +6,42 @@
 ## 1. 架构总览
 
 ```
-公网浏览器 ──▶ 阿里云安全组(入:80,22022) ──▶ Caddy :80 ──▶ gpx2mbtiles 容器 127.0.0.1:8000
-                                                          │
+公网浏览器 ──▶ 阿里云安全组(入:80,22022,3000) ──▶ Caddy :80
+                                                  │
+                    ┌─────────────────────────────┼──────────────────────────┐
+                    ▼                             ▼                          ▼
+              /  → 门户主页              /gpx/* → gpx2mbtiles          (:3000 直连)
+              /srv/portal/index.html     /api/* → 127.0.0.1:8000     Stronghold 游戏容器
+                                         （生成器 + 回放页）
+
   瓦片下载(容器) ── TILE_PROXY=host.docker.internal:7893 ──▶ mihomo 代理(宿主机) ──▶ 瓦片源(Windy/OpenTopoMap)
   Docker 拉镜像 ── daemon.json proxies ─────────────────────▶ mihomo 代理 ──▶ Docker Hub(镜像加速)
   git fetch(自动部署) ── git http.proxy ─────────────────────▶ mihomo 代理 ──▶ github.com
 ```
 
 **代理边界（用户明确要求）**：只有受限地址（瓦片源、Docker Hub、GitHub）走 mihomo 代理；**Web 服务本身不走代理**（Caddy 直接反代容器，无代理层）。
+
+### 1.1 门户与路径分流
+
+Caddy（非 Nginx）在 :80 上按路径分流：
+
+| 路径 | 目标 | 说明 |
+|---|---|---|
+| `/` | `/srv/portal/index.html` | 服务门户主页（静态文件） |
+| `/gpx/*` | `127.0.0.1:8000` | GPX 工具；Caddy 先 `strip_prefix /gpx` 再反代 |
+| `/api/*` | `127.0.0.1:8000` | 前端 `fetch` 使用根路径，故单独反代 |
+| `:3000` | Stronghold 游戏容器 | **直连，未经 Caddy** |
+
+**为什么游戏不做路径反代**：Stronghold-Protocol 前端全部使用根路径绝对引用
+（`/css/`、`/js/`、`/vendor/`、`/manifest.json`）且无 base-path 配置，还有 WebSocket。
+放到 `/game/` 会白屏，除非改造其前端与服务端。故保持 `:3000` 直连。
+
+**性能说明**：Caddy 内置 `encode zstd gzip`（比 Nginx 配置更简短），HTML 设 `no-cache`
+保证改版即时生效，静态资源 7 天缓存。以本机负载（2 核 / 1.8G）而言，
+反代层换 Nginx 无实质收益，反而需重写配置并重做 systemd 托管。
+
+**回放页零后端开销**：`/gpx/player.html` 不调用任何 `/api/`，瓦片直连外部源，
+解析/渲染/截图全在浏览器完成。
 
 ## 2. 服务器环境
 
@@ -31,19 +59,25 @@
 
 | 端口 | 用途 | 暴露范围 |
 |---|---|---|
-| 80 | HTTP Web（Caddy 反代） | 公网（安全组入方向放行） |
+| 80 | HTTP Web：门户主页 + GPX 工具（Caddy） | 公网（安全组入方向放行） |
+| 3000 | Stronghold Protocol 游戏 | 公网（安全组已放行；未经 Caddy） |
 | 22022 | SSH | 公网（安全组入方向放行；22 已从 sshd 移除） |
-| 8000 | 应用 API（容器内） | 仅 127.0.0.1 回环，不对外 |
+| 8000 | gpx2mbtiles（容器内） | 仅 127.0.0.1 回环，不对外 |
 | 7893 | mihomo 混合代理 | 仅 127.0.0.1 + Docker 网桥 172.16.0.0/12（iptables 收紧，外部 REJECT） |
 
-安全组只需放行入方向 **80、22022**（出方向默认全放行）。
+安全组需放行入方向 **80、22022、3000**（出方向默认全放行）。
+
+> ⚠️ **本机 iptables 的 INPUT 链末尾是 `-A INPUT -j ACCEPT`**，即主机防火墙实际不拦任何端口；
+> 真正的边界是阿里云安全组。向公网暴露端口的唯一有效控制手段是安全组规则。
 
 ## 4. 服务组件
 
 | 服务 | 实现 | 启动方式 | 配置 |
 |---|---|---|---|
 | Web 应用 | Docker 容器 `gpx2mbtiles` | docker compose（restart=unless-stopped） | `/opt/gpx2mbtiles/compose.yaml` + `.env` |
-| 反向代理 | Caddy v2 | systemd `caddy.service` | `/etc/caddy/Caddyfile`（`:80 → reverse_proxy 127.0.0.1:8000`） |
+| 反向代理 / 门户 | Caddy v2.11.4 | systemd `caddy.service` | `/etc/caddy/Caddyfile`（门户 `/` + 反代 `/gpx`、`/api`） |
+| 门户主页 | 静态 HTML | Caddy `file_server` | `/srv/portal/index.html`（仓库内 `web/portal.html`） |
+| 游戏 | Docker 容器 `stronghold` | 手工 `docker run`（非 compose） | `/opt/Stronghold-Protocol`，:3000 |
 | 代理 | mihomo v1.19.30 | systemd `mihomo.service` | `/etc/mihomo/config.yaml`（订阅处理产物） |
 | 订阅更新 | python 脚本 + cron | crond（每小时） | `/opt/gpx2mbtiles/scripts/update_sub.py` |
 
@@ -132,6 +166,16 @@ fail2ban-client status sshd                 # 被封 IP
 
 # 手动更新订阅并生效
 /usr/bin/python3 /opt/gpx2mbtiles/scripts/update_sub.py --commit
+
+# 门户 / 反代
+systemctl reload caddy                     # 改完 Caddyfile 后平滑重载
+caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile   # 校验
+cat /var/log/caddy/access.log              # 访问日志（10MiB 轮转，保留 3 份）
+ls /etc/caddy/Caddyfile.bak.*              # 历史配置备份
+
+# 游戏容器（手工启动，非 compose）
+docker restart stronghold
+docker logs --tail 50 stronghold
 
 # 手动部署（与 workflow 等价）
 cd /opt/gpx2mbtiles && docker compose up -d --build

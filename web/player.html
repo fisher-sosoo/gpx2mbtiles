@@ -126,8 +126,8 @@
 <div class="topbar">
   <div class="brand">🗺️ GPX 工具</div>
   <div class="tabs">
-    <a class="tab" href="/">📦 生成离线地图</a>
-    <a class="tab active" href="/player.html">🎬 轨迹回放与分析</a>
+    <a class="tab" href="/gpx/">📦 生成离线地图</a>
+    <a class="tab active" href="/gpx/player.html">🎬 轨迹回放与分析</a>
   </div>
 </div>
 
@@ -1232,7 +1232,7 @@
         } else {
           if (!genFrame.getAttribute('src')) genFrame.setAttribute('src', '/');
         }
-        try { history.replaceState(null, '', goPlayer ? '/player.html' : '/'); } catch (e) {}
+        try { history.replaceState(null, '', goPlayer ? '/gpx/player.html' : '/gpx/'); } catch (e) {}
       });
     });
     // 默认路由：/player.html -> 回放；/ -> 生成器
