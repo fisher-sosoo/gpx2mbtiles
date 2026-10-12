@@ -71,6 +71,16 @@ jobs:
             git checkout "$TAG" || exit 1
             echo "HEAD: $(git log --oneline -1)"
 
+            # 部署门户主页：仓库内 web/portal.html -> /srv/portal/index.html
+            # （门户不在容器里，由 Caddy file_server 直接提供，故需单独同步）
+            if [ -f "$APP_DIR/web/portal.html" ]; then
+              mkdir -p /srv/portal
+              install -m 0644 "$APP_DIR/web/portal.html" /srv/portal/index.html
+              echo "门户已同步: $(wc -c < /srv/portal/index.html) 字节"
+            else
+              echo "::warning::未找到 web/portal.html，跳出门户同步"
+            fi
+
             echo "=== Building ==="
             if docker compose build --pull; then
               echo "=== Starting ==="

@@ -125,6 +125,22 @@ PORTAL = ROOT / "web" / "portal.html"
 CADDY = ROOT / "deploy" / "Caddyfile.portal"
 
 
+@pytest.mark.parametrize("path", ["web/portal.html", "web/index.html", "web/player.html"])
+def test_html_is_valid_utf8_with_chinese(path):
+    """所有页面的中文必须是合法 UTF-8。
+
+    回归防护：曾因上传路径编码问题，中文全部被替换成 '?'，页面显示乱码，
+    但 HTTP 仍返回 200 —— 只检查状态码无法发现这类损坏。
+    """
+    raw = (ROOT / path).read_bytes()
+    text = raw.decode("utf-8")  # 非法 UTF-8 会直接抛异常
+    assert text.count("\ufffd") == 0, f"{path} 含 U+FFFD 替换字符，编码已损坏"
+    non_ascii = sum(1 for b in raw if b > 127)
+    assert non_ascii > 0, f"{path} 不含任何非 ASCII 字节，中文疑似被替换为 '?'"
+    assert any(k in text for k in ("服务门户", "离线地图", "轨迹")), (
+        f"{path} 未找到预期中文内容，疑似编码损坏")
+
+
 def test_portal_exists_and_links_services():
     """门户主页必须存在并能进入两个服务。"""
     assert PORTAL.is_file(), "缺少门户主页 web/portal.html"

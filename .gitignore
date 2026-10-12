@@ -13,3 +13,8 @@ smoke.gpx
 smoke_out.mbtiles
 # 本地部署辅助工具（含服务器凭据，禁止入库）
 .deploy/
+# 前端临时/调试脚本与依赖（不应入库）
+web/node_modules/
+web/_*.js
+web/package.json
+web/package-lock.json
