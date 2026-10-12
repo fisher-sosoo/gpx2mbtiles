@@ -4,12 +4,39 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Preflight - 检查 Secrets 是否配置
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          missing=""
+          [ -z "$SSH_HOST" ] && missing="$missing SSH_HOST"
+          [ -z "$SSH_USER" ] && missing="$missing SSH_USER"
+          [ -z "$SSH_PASSWORD" ] && missing="$missing SSH_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少仓库 Secrets:$missing"
+            echo "请在 Settings → Secrets and variables → Actions 中配置。"
+            exit 1
+          fi
+          echo "Secrets 已配置（host 长度 ${#SSH_HOST}，password 长度 ${#SSH_PASSWORD}）"
+
+      - name: 探测 SSH 端口连通性
+        run: |
+          echo "探测 ${{ secrets.SSH_HOST }}:22022 ..."
+          if timeout 15 bash -c "cat < /dev/null > /dev/tcp/${{ secrets.SSH_HOST }}/22022"; then
+            echo "SSH 端口 22022 可达"
+          else
+            echo "::error::无法连接 ${{ secrets.SSH_HOST }}:22022（安全组未放行或 IP 被封）"
+            exit 1
+          fi
+
       - name: Deploy with auto-rollback
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -17,77 +44,56 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           port: 22022
+          command_timeout: 30m
           script_stop: false
+          debug: true
           script: |
+            echo "=== Runner 已连上服务器 ==="
             TAG="${{ github.ref_type == 'tag' && github.ref_name || 'origin/main' }}"
             APP_DIR=/opt/gpx2mbtiles
             LAST_FILE=$APP_DIR/.last_success
             HEALTH_URL=http://127.0.0.1:8000/api/health
 
-            echo "=== Deploying tag: $TAG ==="
+            echo "=== Deploying: $TAG ==="
             cd $APP_DIR || exit 1
 
             git fetch --tags || exit 1
             git checkout "$TAG" || exit 1
+            echo "HEAD: $(git log --oneline -1)"
 
-            # ---- 构建并启动 ----
-            echo "=== Building image ==="
-            docker compose build --pull
-            BUILD_OK=$?
-            DEPLOY_OK=0
-
-            if [ $BUILD_OK -eq 0 ]; then
-              echo "=== Starting container ==="
+            echo "=== Building ==="
+            if docker compose build --pull; then
+              echo "=== Starting ==="
               docker compose up -d
-
-              # ---- 健康检查（最多 60 秒）----
-              echo "=== Waiting for health check ==="
               for i in $(seq 1 30); do
                 if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
-                  DEPLOY_OK=1
-                  echo "Health check passed after ~$((i*2))s"
-                  break
+                  echo "$TAG" > "$LAST_FILE"
+                  echo "=== Deploy SUCCESS: $TAG (after ~$((i*2))s) ==="
+                  exit 0
                 fi
                 sleep 2
               done
-
-              if [ $DEPLOY_OK -eq 1 ]; then
-                echo "$TAG" > "$LAST_FILE"
-                echo "=== Deploy SUCCESS: $TAG ==="
-                exit 0
-              fi
               echo "=== Health check FAILED after 60s ==="
             else
-              echo "=== Build FAILED (exit $BUILD_OK) ==="
+              echo "=== Build FAILED ==="
             fi
 
-            # ---- 自动回滚到上一个成功 tag ----
-            echo "=== Attempting rollback ==="
+            echo "=== Rolling back ==="
             if [ ! -f "$LAST_FILE" ]; then
-              echo "ERROR: No previous successful deploy recorded ($LAST_FILE), cannot rollback"
+              echo "::error::无回滚目标（$LAST_FILE 不存在）"
               exit 1
             fi
-            PREV_TAG=$(cat "$LAST_FILE")
-            echo "Rolling back to: $PREV_TAG"
-
-            git checkout "$PREV_TAG" || exit 1
+            PREV=$(cat "$LAST_FILE")
+            echo "Rollback to: $PREV"
+            git checkout "$PREV" || exit 1
             docker compose build --pull || exit 1
             docker compose up -d || exit 1
-
-            # ---- 验证回滚后健康 ----
-            ROLLBACK_OK=0
             for i in $(seq 1 30); do
               if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
-                ROLLBACK_OK=1
-                echo "Rollback health check passed after ~$((i*2))s"
-                break
+                echo "=== Rollback SUCCESS: $PREV ==="
+                exit 1
               fi
               sleep 2
             done
-
-            if [ $ROLLBACK_OK -eq 1 ]; then
-              echo "=== Rollback SUCCESS: restored $PREV_TAG (deploy of $TAG failed) ==="
-            else
-              echo "=== Rollback FAILED: manual intervention required ==="
-            fi
+            echo "::error::回滚后仍不健康，需人工介入"
             exit 1
