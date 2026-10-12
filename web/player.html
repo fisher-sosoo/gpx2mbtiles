@@ -95,7 +95,7 @@
             cursor:pointer; backdrop-filter:blur(6px); white-space:nowrap; }
   .mt-btn:hover { background:#243547; }
   .mt-btn.on { background:var(--accent); color:#06233f; border-color:var(--accent); }
-  .legend { position:absolute; left:12px; bottom:22px; z-index:500; background:#0e141bdd;
+  .legend { position:absolute; left:12px; bottom:22px; z-index:500; background:#0e141bd0;
             border:1px solid var(--line); border-radius:10px; padding:22px 12px 9px;
             font-size:12px; line-height:1.65; backdrop-filter:blur(6px);
             min-width:150px; min-height:70px; max-width:80vw; max-height:70vh;
@@ -109,10 +109,14 @@
   .legend .li .sw-line { width:20px; height:3px; border-radius:2px; flex-shrink:0; }
   .legend .li .sw-dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; border:2px solid #fff6; }
   .legend .sum { color:#9fc2e8; font-weight:700; margin-bottom:5px; font-size:12.5px; }
-  .map-title { position:absolute; left:12px; top:10px; z-index:500; background:#0e141bdd;
-               border:1px solid var(--line); border-radius:10px; padding:7px 12px;
-               font-size:14px; font-weight:700; backdrop-filter:blur(6px); max-width:50vw;
-               display:none; }
+  /* 地图标题：不用底色块，改用描边阴影（与导出 PNG 一致） */
+  .map-title { position:absolute; left:12px; top:10px; z-index:500; background:transparent;
+               border:0; padding:2px 4px; font-size:16px; font-weight:700; max-width:60vw;
+               letter-spacing:.3px; display:none;
+               text-shadow:
+                 -1.5px -1.5px 0 rgba(0,0,0,.9), 1.5px -1.5px 0 rgba(0,0,0,.9),
+                 -1.5px  1.5px 0 rgba(0,0,0,.9), 1.5px  1.5px 0 rgba(0,0,0,.9),
+                  0 2px 5px rgba(0,0,0,.95); }
 
   /* ---------- 标记图标 / 标签 ---------- */
   .pin { width:22px; height:22px; border-radius:50% 50% 50% 0; transform:rotate(-45deg);
@@ -122,9 +126,14 @@
               text-shadow:0 1px 2px #000a; }
   .pin.wpt { border-radius:50%; transform:none; }
   .pin.wpt span { transform:none; }
-  .lbl { background:#0e141bdd; border:1px solid #ffffff2e; border-radius:6px;
-         padding:1px 6px; font-size:11.5px; font-weight:600; white-space:nowrap;
-         text-shadow:0 1px 2px #000; }
+  /* 名称标签：不加底色块（在浅色地形图上是明显的黑点），
+     改用多层描边式阴影，任何底图上都清晰且不遮挡地图内容 */
+  .lbl { background:transparent; border:0; padding:0 2px; font-size:12px;
+         font-weight:700; white-space:nowrap; letter-spacing:.2px;
+         text-shadow:
+           -1px -1px 0 rgba(0,0,0,.85), 1px -1px 0 rgba(0,0,0,.85),
+           -1px  1px 0 rgba(0,0,0,.85), 1px  1px 0 rgba(0,0,0,.85),
+            0 1px 3px rgba(0,0,0,.9); }
   .lbl.kml { font-size:10.5px; font-weight:500; opacity:.85; padding:0 4px; }
 </style>
 </head>
@@ -371,21 +380,39 @@
       var opts = {};
       for (var k in b.opts) if (Object.prototype.hasOwnProperty.call(b.opts, k)) opts[k] = b.opts[k];
       opts.opacity = state.baseOpacity;
-      if (trackPane) opts.pane = 'tracks';
+      // 注意：底图必须待在 Leaflet 默认的 tilePane（zIndex 200），
+      // 不能放进轨迹 pane，否则会盖住轨迹。
 
       // ---- 节流：Windy 对高频请求会直接返回 403 ----
       // 默认行为下 Leaflet 在拖动/缩放动画期间就持续请求，并预取视口外 2 圈瓦片，
       // 很容易瞬间打满并发被判定为爬取。这里全部收紧。
-      opts.updateWhenIdle = (key === 'windy');   // 拖动/缩放结束后才请求，不再逐帧
+      //
+      // 但 updateWhenIdle=true 会让瓦片只在 moveend/zoomend 后才加载，
+      // 而「切换底图」并不会触发这两个事件 —— 新图层会一直空白。
+      // 所以下面 addTo 之后必须手动补一次加载。
+      opts.updateWhenIdle = (key === 'windy');
       opts.updateWhenZooming = false;            // 缩放动画期间不发请求
       opts.keepBuffer = 1;                       // 视口外只留 1 圈，减少来回平移的重复请求
       opts.crossOrigin = true;                   // 配合导出 PNG 读取像素
       opts.errorTileUrl = TRANSPARENT_TILE;      // 403/404 时用透明图占位，不显示碎图
 
       baseLayer = L.tileLayer(b.url, opts);
+      // 必须先装节流再挂到地图上：addTo 会立刻触发首屏瓦片加载，
+      // 若此时还没替换 createTile，那一批请求会完全绕过限流
+      // （实测会瞬间放出十几个并发，正是被 Windy 判为爬取的原因）。
       if (key === 'windy') applyWindyThrottle(baseLayer);
       baseLayer.addTo(map);
       baseLayer.bringToBack();
+      // 切换底图后主动触发一次加载。
+      // updateWhenIdle=true 的图层只在 moveend/zoomend 后加载瓦片，
+      // 而切换底图不会触发这两个事件，不补这一下新底图会一直空白。
+      // 用公开 API redraw()，不碰 Leaflet 私有方法。
+      setTimeout(function () {
+        if (!baseLayer || !map.hasLayer(baseLayer)) return;
+        baseLayer.redraw();
+        // redraw 在部分版本下仍受 _loading 状态阻挡，再补一次视图复位
+        map.fire('moveend');
+      }, 30);
     }
   }
   function setBasemapOpacity(v) {
@@ -410,10 +437,23 @@
   var SPEED_KEY = 'normal';
   var inFlight = 0, lastStart = 0, queue = [];
 
+  // 单飞调度器：保证同一时刻只有一个 pump 在等待，避免多个 setTimeout
+  // 并存时一起触发、瞬间放行一大批请求（这正是之前"开局 16 个并发"的原因）。
+  var pumpTimer = null;
+  function schedulePump(delay) {
+    if (pumpTimer !== null) return;          // 已有待执行的调度，不重复排队
+    pumpTimer = setTimeout(function () {
+      pumpTimer = null;
+      pump();
+    }, Math.max(0, delay || 0));
+  }
+
   function pump() {
-    if (!queue.length || inFlight >= MAX_PARALLEL) return;
+    if (!queue.length) return;
+    if (inFlight >= MAX_PARALLEL) return;    // 有人完成时会再调 schedulePump
     var wait = Math.max(0, MIN_GAP - (Date.now() - lastStart));
-    if (wait > 0) { setTimeout(pump, wait); return; }
+    if (wait > 0) { schedulePump(wait); return; }
+
     var job = queue.shift();
     inFlight++; lastStart = Date.now();
     var released = false;
@@ -421,8 +461,10 @@
       if (released) return;
       released = true;
       inFlight = Math.max(0, inFlight - 1);
-      setTimeout(pump, 0);
+      schedulePump(0);
     });
+    // 还有余量就继续放行下一个（间隔由上面的 wait 控制）
+    if (queue.length && inFlight < MAX_PARALLEL) schedulePump(0);
   }
 
   // 包一层 createTile：把真实的图片加载放进队列里
@@ -1317,15 +1359,21 @@
         drawChip(ctx, m.name, xy[0], xy[1] - 26, m.color === '#ffffff' ? '#e8eef4' : m.color);
       });
 
-      // ---- 6. 标题与图例（沿用页面上的 HTML 样式，但绘制到画布）----
+      // ---- 6. 标题与图例 ----
+      // 标题同样不用实心底色块，改用描边阴影，避免在图上压出一大块黑底
       if (state.title) {
-        ctx.font = '700 15px -apple-system,"PingFang SC","Segoe UI",sans-serif';
-        var tw = ctx.measureText(state.title).width;
-        roundRect(ctx, 12, 10, tw + 24, 30, 9);
-        ctx.fillStyle = 'rgba(14,20,27,.88)'; ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.stroke();
-        ctx.fillStyle = '#e8eef4';
-        ctx.fillText(state.title, 24, 30);
+        ctx.save();
+        ctx.font = '700 16px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round';
+        ctx.miterLimit = 2;
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(0,0,0,.85)';
+        ctx.strokeText(state.title, 14, 26);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(state.title, 14, 26);
+        ctx.restore();
       }
       if (state.showLegend) drawLegendCanvas(ctx, w, h);
 
@@ -1385,19 +1433,22 @@
     ctx.closePath();
   }
 
-  // 带底色的文字标签（轨迹名 / 标记名）
+  // 文字标签（轨迹名 / 标记名）：不画底色块，用描边式阴影保证可读性，
+  // 与网页上的 .lbl 样式保持一致。
   function drawChip(ctx, text, cx, cy, color) {
     if (!text) return;
     ctx.save();
-    ctx.font = '600 11.5px -apple-system,"PingFang SC","Segoe UI",sans-serif';
-    var tw = ctx.measureText(text).width;
-    var padX = 6, hgt = 18;
-    roundRect(ctx, cx - tw / 2 - padX, cy - hgt / 2, tw + padX * 2, hgt, 6);
-    ctx.fillStyle = 'rgba(14,20,27,.88)'; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.font = '700 12px -apple-system,"PingFang SC","Segoe UI",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    // 先描一圈黑边，再填充彩色文字
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,.85)';
+    ctx.strokeText(text, cx, cy);
     ctx.fillStyle = color || '#e8eef4';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(text, cx, cy + 0.5);
+    ctx.fillText(text, cx, cy);
     ctx.restore();
   }
 
@@ -1450,9 +1501,16 @@
     var boxH = rows.length * lineH + padY * 2 + (state.title ? 20 : 0);
     var bx = 12, by = h - boxH - 22;
 
+    // 图例是信息面板，保留底色以便阅读；用圆角 + 描边让它看起来是刻意的卡片
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.45)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 2;
     roundRect(ctx, bx, by, boxW, boxH, 10);
-    ctx.fillStyle = 'rgba(14,20,27,.88)'; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = 'rgba(14,20,27,.82)'; ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 1;
+    roundRect(ctx, bx, by, boxW, boxH, 10); ctx.stroke();
 
     var cy = by + padY;
     if (state.title) {
