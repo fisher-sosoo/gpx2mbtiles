@@ -58,6 +58,16 @@ jobs:
             cd $APP_DIR || exit 1
 
             git fetch --tags || exit 1
+
+            # 部署机不应有本地改动；残留的手工改动会让 checkout 直接失败
+            # （曾导致连续三次部署失败且原因不可见）。这里先丢弃已跟踪文件的改动，
+            # 未跟踪的运行时文件（.last_success / scripts/*.py）保持不动。
+            if ! git diff --quiet; then
+              echo "=== 丢弃部署机上的本地改动 ==="
+              git diff --name-only
+              git checkout -- . || exit 1
+            fi
+
             git checkout "$TAG" || exit 1
             echo "HEAD: $(git log --oneline -1)"
 
