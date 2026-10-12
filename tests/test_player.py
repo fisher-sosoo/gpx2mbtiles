@@ -79,6 +79,9 @@ def test_player_has_core_features():
         "data-act=\"color\"",                    # 颜色选择
         "sampleByDistance",                         # 里程桩
         "buildEndpoints", "buildArrows",            # 起终点 / 方向箭头
+        "updateWhenIdle", "updateWhenZooming",      # Windy 瓦片节流（防 403）
+        "keepBuffer", "applyWindyThrottle",         # 并发与缓冲收紧
+        "id=\"tileSpeed\"",                      # 瓦片加载速度档位
         "localStorage",                             # 本地持久化
         "exportGpx", "exportJson",                  # 导出
         "html2canvas",                              # PNG 截图
@@ -198,3 +201,23 @@ def test_kml_color_conversion():
         assert got == ["#ff0000", "#0000ff", "#00ff00", None], got
     finally:
         Path(tmp).unlink(missing_ok=True)
+
+def test_windy_tile_throttling_present():
+    """Windy 对密集请求会返回 403，回放页必须保留节流配置。
+
+    历史上这里踩过坑：Leaflet 默认在拖动/缩放动画期间持续请求瓦片，
+    并预取视口外 2 圈，很容易被瓦片源判定为爬取而拒绝。
+    """
+    js = _extract_inline_js(_read(PLAYER))
+    # 三档速度预设
+    for key in ("safe", "normal", "fast"):
+        assert key + ":" in js, f"缺少瓦片速度档位: {key}"
+    # 默认必须开启延迟加载与低缓冲
+    assert "updateWhenIdle = (key === 'windy')" in js, "Windy 底图应启用 updateWhenIdle"
+    assert "updateWhenZooming = false" in js, "应禁用缩放动画期间的瓦片请求"
+    assert "keepBuffer = 1" in js, "应把 keepBuffer 收紧到 1"
+    # 队列式限流
+    assert "function pump()" in js, "缺少瓦片请求队列"
+    assert "MAX_PARALLEL" in js and "MIN_GAP" in js, "缺少并发/间隔控制"
+    # 403 时要有透明占位，避免地图显示碎图
+    assert "errorTileUrl" in js and "TRANSPARENT_TILE" in js, "缺少失败瓦片的透明占位"

@@ -163,7 +163,14 @@
       <input type="range" id="baseOp" min="10" max="100" value="100" style="width:100%">
       <label>轨迹不透明度（全部） <span class="muted" id="trOpVal">100%</span></label>
       <input type="range" id="trOp" min="10" max="100" value="100" style="width:100%">
-      <div class="hint">底图调淡可以让轨迹更清楚；改单条轨迹用列表里的滑块。</div>
+      <label>瓦片加载速度 <span class="muted" id="tileSpeedVal"></span></label>
+      <select id="tileSpeed">
+        <option value="safe">🐢 保守（最不容易被限流，推荐）</option>
+        <option value="normal" selected>🚶 正常</option>
+        <option value="fast">⚡ 快速（可能触发 403）</option>
+      </select>
+      <div class="hint">底图调淡可以让轨迹更清楚；改单条轨迹用列表里的滑块。<br>
+        Windy 对密集请求会返回 403，被限流时页面会自动降速并提示。</div>
     </div>
 
     <div class="card">
@@ -353,7 +360,18 @@
       for (var k in b.opts) if (Object.prototype.hasOwnProperty.call(b.opts, k)) opts[k] = b.opts[k];
       opts.opacity = state.baseOpacity;
       if (trackPane) opts.pane = 'tracks';
+
+      // ---- 节流：Windy 对高频请求会直接返回 403 ----
+      // 默认行为下 Leaflet 在拖动/缩放动画期间就持续请求，并预取视口外 2 圈瓦片，
+      // 很容易瞬间打满并发被判定为爬取。这里全部收紧。
+      opts.updateWhenIdle = (key === 'windy');   // 拖动/缩放结束后才请求，不再逐帧
+      opts.updateWhenZooming = false;            // 缩放动画期间不发请求
+      opts.keepBuffer = 1;                       // 视口外只留 1 圈，减少来回平移的重复请求
+      opts.crossOrigin = true;                   // 配合导出 PNG 读取像素
+      opts.errorTileUrl = TRANSPARENT_TILE;      // 403/404 时用透明图占位，不显示碎图
+
       baseLayer = L.tileLayer(b.url, opts);
+      if (key === 'windy') applyWindyThrottle(baseLayer);
       baseLayer.addTo(map);
       baseLayer.bringToBack();
     }
@@ -361,6 +379,87 @@
   function setBasemapOpacity(v) {
     state.baseOpacity = v;
     if (baseLayer) baseLayer.setOpacity(v);
+  }
+
+  // ---------------------------------------------------------------- 瓦片节流
+  // Windy 对短时间内的密集请求会返回 403（实测：连续快速请求相邻瓦片即被拒，
+  // 间隔几秒后恢复正常）。Leaflet 默认并发很高，这里加一层队列：
+  //   - 同时最多 MAX_PARALLEL 个请求在飞
+  //   - 每个请求之间至少间隔 MIN_GAP 毫秒
+  // 403 时退避重试，并临时把速度降得更低。
+  var TRANSPARENT_TILE = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  var SPEED = {
+    safe:   { parallel: 1, gap: 500 },
+    normal: { parallel: 2, gap: 220 },
+    fast:   { parallel: 4, gap: 80 }
+  };
+  var MAX_PARALLEL = 2;
+  var MIN_GAP = 220;          // ms，两个请求之间的最小间隔
+  var SPEED_KEY = 'normal';
+  var inFlight = 0, lastStart = 0, queue = [];
+
+  function pump() {
+    if (!queue.length || inFlight >= MAX_PARALLEL) return;
+    var wait = Math.max(0, MIN_GAP - (Date.now() - lastStart));
+    if (wait > 0) { setTimeout(pump, wait); return; }
+    var job = queue.shift();
+    inFlight++; lastStart = Date.now();
+    var released = false;
+    job(function () {
+      if (released) return;
+      released = true;
+      inFlight = Math.max(0, inFlight - 1);
+      setTimeout(pump, 0);
+    });
+  }
+
+  // 包一层 createTile：把真实的图片加载放进队列里
+  function applySpeed(key) {
+    var p = SPEED[key] || SPEED.normal;
+    SPEED_KEY = SPEED[key] ? key : 'normal';
+    MAX_PARALLEL = p.parallel;
+    MIN_GAP = p.gap;
+  }
+
+  function applyWindyThrottle(layer) {
+    // 拦截点选在 createTile：Leaflet 的原实现是
+    //     var tile = document.createElement('img'); tile.src = this.getTileUrl(coords);
+    // 一旦赋 src 请求就发出去了，事后摘除已经晚了。所以这里自己建元素，
+    // 把「赋 src」这一步交给队列，才能真正控制并发与间隔。
+    var origGetUrl = layer.getTileUrl.bind(layer);
+
+    layer.createTile = function (coords, done) {
+      var img = document.createElement('img');
+      img.alt = '';
+      // Leaflet 会读取这些属性做定位/交互
+      img.setAttribute('role', 'presentation');
+      if (layer.options && layer.options.crossOrigin !== undefined) {
+        if (layer.options.crossOrigin === true) img.crossOrigin = '';
+        else if (layer.options.crossOrigin) img.crossOrigin = layer.options.crossOrigin;
+      }
+      var url;
+      try { url = origGetUrl(coords); }
+      catch (e) { url = ''; }
+
+      var finished = false, release = null;
+      function finish(err) {
+        if (finished) return;
+        finished = true;
+        done(err, img);
+        if (release) release();
+      }
+      img.onload = function () { noteTileOK(); finish(null); };
+      img.onerror = function () { noteTileError(); finish(new Error('tile')); };
+
+      if (!url) { setTimeout(function () { finish(null); }, 0); return img; }
+
+      queue.push(function (releaseFn) {
+        release = releaseFn;
+        img.src = url;
+      });
+      pump();
+      return img;
+    };
   }
 
   // ---------------------------------------------------------------- 地图初始化
@@ -682,19 +781,23 @@
 
   // ---------------------------------------------------------------- 标记
   function markIcon(m, idx) {
-    var inner = '';
     var glyph = '';
     if (m.kind === 'start') glyph = 'S';
     else if (m.kind === 'end') glyph = 'E';
-    else if (m.kind === 'km') glyph = '';
+    else if (m.kind === 'waypoint' || m.kind === 'poi') glyph = 'P';
+    else if (m.kind === 'km') glyph = '';        // 里程桩只画小圆点，不带文字
     else if (m.seq) glyph = String(idx);
-    inner = '<span>' + esc(glyph) + '</span>';
     var cls = (m.kind === 'waypoint' || m.kind === 'poi' || m.kind === 'km') ? 'pin wpt' : 'pin';
-    var size = m.kind === 'km' ? 16 : 22;
-    var html = '<div class="' + cls + '" style="background:' + esc(m.color) +
-      ';width:' + size + 'px;height:' + size + 'px"></div>';
+    var size = m.kind === 'km' ? 14 : 22;
+    // 里程桩：空心小圆 + 白色描边，明显区别于手动标记的实心图钉
+    var style = m.kind === 'km'
+      ? 'background:#0e141b;border:2px solid ' + esc(m.color) + ';width:' + size +
+        'px;height:' + size + 'px'
+      : 'background:' + esc(m.color) + ';width:' + size + 'px;height:' + size + 'px';
+    var html = '<div class="' + cls + '" style="' + style + '">' +
+      (glyph ? '<span>' + esc(glyph) + '</span>' : '') + '</div>';
     return L.divIcon({ className: '', html: html, iconSize: [size, size],
-                       iconAnchor: [size / 2, size] });
+                       iconAnchor: [size / 2, size / 2] });
   }
 
   function renderMarks() {
@@ -1176,6 +1279,7 @@
     var data = {
       version: 1, savedAt: new Date().toISOString(), title: state.title,
       base: state.base, baseOpacity: state.baseOpacity, showLegend: state.showLegend,
+      tileSpeed: SPEED_KEY,
       tracks: state.tracks.map(function (t) {
         return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
                  showLabel: t.showLabel, opacity: t.opacity,
@@ -1211,6 +1315,11 @@
     });
     state.title = d.title || '';
     state.showLegend = !!d.showLegend;
+    if (d.tileSpeed && SPEED[d.tileSpeed]) {
+      applySpeed(d.tileSpeed);
+      var ss = document.getElementById('tileSpeed');
+      if (ss) ss.value = d.tileSpeed;
+    }
     state.baseOpacity = typeof d.baseOpacity === 'number' ? d.baseOpacity : 1;
     document.getElementById('mapTitle').value = state.title;
     document.getElementById('baseOp').value = Math.round(state.baseOpacity * 100);
@@ -1229,7 +1338,7 @@
     saveTimer = setTimeout(function () {
       try {
         var data = { version: 1, title: state.title, base: state.base,
-          baseOpacity: state.baseOpacity, showLegend: state.showLegend,
+          baseOpacity: state.baseOpacity, showLegend: state.showLegend, tileSpeed: SPEED_KEY,
           tracks: state.tracks.map(function (t) {
             return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
                      showLabel: t.showLabel, opacity: t.opacity,
@@ -1260,6 +1369,32 @@
     el.textContent = state.title || '';
     el.style.display = state.title ? 'block' : 'none';
     document.getElementById('mtTitle').classList.toggle('on', !!state.title);
+  }
+
+  // 403 时自动降速并提示；恢复后自动还原
+  var throttleNotice = false;
+  var errored = 0, loaded = 0;
+  function noteTileError() {
+    errored++;
+    // 连续出错说明被限流：临时降到比当前档位更慢
+    if (errored >= 3) { MIN_GAP = Math.min(2000, MIN_GAP + 150); MAX_PARALLEL = 1; }
+    if (throttleNotice) return;
+    throttleNotice = true;
+    var el = document.getElementById('saveHint');
+    if (el) el.textContent = '⚠️ 瓦片源限流中，已自动降速重试…（Windy 对密集请求会返回 403）';
+  }
+  function noteTileOK() {
+    loaded++;
+    // 连续成功若干次后，回到用户选择的档位
+    if (loaded >= 10 && (throttleNotice || MIN_GAP > (SPEED[SPEED_KEY] || SPEED.normal).gap)) {
+      loaded = 0; errored = 0;
+      applySpeed(SPEED_KEY);
+      if (throttleNotice) {
+        throttleNotice = false;
+        var el = document.getElementById('saveHint');
+        if (el) el.textContent = '✓ 瓦片加载已恢复正常';
+      }
+    }
   }
 
   function bindUI() {
@@ -1311,6 +1446,17 @@
     // --- 底图 ---
     document.getElementById('baseSel').addEventListener('change', function () {
       setBasemap(this.value, state.baseOpacity); save();
+    });
+    var speedSel = document.getElementById('tileSpeed');
+    speedSel.value = SPEED_KEY;
+    speedSel.addEventListener('change', function () {
+      applySpeed(this.value);
+      errored = 0; loaded = 0; throttleNotice = false;
+      document.getElementById('saveHint').textContent =
+        '瓦片加载速度已切换为「' + this.options[this.selectedIndex].text + '」';
+      // 重建底图让新速度生效
+      setBasemap(state.base, state.baseOpacity);
+      save();
     });
     document.getElementById('baseOp').addEventListener('input', function () {
       var v = parseInt(this.value, 10) / 100;
