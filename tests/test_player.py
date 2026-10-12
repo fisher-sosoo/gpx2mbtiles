@@ -69,7 +69,12 @@ def test_player_has_core_features():
         "kmlColorToHex",                            # KML aabbggrr 颜色
         "tiles.windy.com",                          # Windy 底图
         "opentopomap.org",                          # OTM 底图
-        "showLabel",                                # 名称标签开关
+        "showLabel",                                # 轨迹名称标签开关
+        "renderMarkLabels",                         # 标记名称常驻显示
+        "data-act=\"mlabel\"",                   # 单个标记标签开关
+        "btnAllMarkLbl", "btnMarkLblOff",           # 标记标签批量开关
+        "data-act=\"opacity\"",                  # 单条轨迹不透明度
+        "id=\"trOp\"",                           # 全局轨迹不透明度
         "data-act=\"visible\"",                  # 显示/隐藏
         "data-act=\"color\"",                    # 颜色选择
         "sampleByDistance",                         # 里程桩

@@ -159,9 +159,11 @@
         <option value="osm">OpenStreetMap 标准</option>
         <option value="none">无底图（纯轨迹）</option>
       </select>
-      <label>不透明度 <span class="muted" id="opVal">100%</span></label>
-      <input type="range" id="baseOp" min="20" max="100" value="100" style="width:100%">
-      <div class="hint">底图需 PC 自备网络（挂梯子）；此页面不会向你的服务器请求任何瓦片。</div>
+      <label>底图不透明度 <span class="muted" id="opVal">100%</span></label>
+      <input type="range" id="baseOp" min="10" max="100" value="100" style="width:100%">
+      <label>轨迹不透明度（全部） <span class="muted" id="trOpVal">100%</span></label>
+      <input type="range" id="trOp" min="10" max="100" value="100" style="width:100%">
+      <div class="hint">底图调淡可以让轨迹更清楚；改单条轨迹用列表里的滑块。</div>
     </div>
 
     <div class="card">
@@ -177,7 +179,11 @@
     <div class="card">
       <h2>标记与注释 <span class="muted" id="markCount">0 个</span></h2>
       <div id="markList"><div class="empty">点地图上的「＋ 添加标记」开始</div></div>
-      <div class="hint">标记可在地图上拖动定位；注释内容会随导出的 PNG 一起出现在图上。</div>
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnAllMarkLbl">全部显示名称</button>
+        <button class="secondary tiny" id="btnMarkLblOff">全部隐藏名称</button>
+      </div>
+      <div class="hint">标记可拖动定位；勾「名」把名称常驻显示在地图上（不用悬停），截图时也会带上。</div>
     </div>
 
     <div class="card">
@@ -649,9 +655,10 @@
     var group = L.layerGroup();
     if (latlngs.length >= 2) {
       // 白色描边垫底，保证在深色/浅色底图上都看得清
-      L.polyline(latlngs, { color: '#ffffff', weight: t.weight + 3, opacity: .55,
+      L.polyline(latlngs, { color: '#ffffff', weight: t.weight + 3,
+                            opacity: t.opacity * 0.55,
                             pane: 'tracks', interactive: false }).addTo(group);
-      L.polyline(latlngs, { color: t.color, weight: t.weight, opacity: 1,
+      L.polyline(latlngs, { color: t.color, weight: t.weight, opacity: t.opacity,
                             pane: 'tracks', interactive: false }).addTo(group);
     }
     group.addTo(map);
@@ -693,6 +700,7 @@
   function renderMarks() {
     state.marks.forEach(function (m, i) {
       if (m.layer) { map.removeLayer(m.layer); m.layer = null; }
+      if (m.label) { map.removeLayer(m.label); m.label = null; }
       var mk = L.marker([m.lat, m.lng], {
         draggable: true, icon: markIcon(m, i), zIndexOffset: m.kind === 'km' ? 0 : 500
       }).addTo(map);
@@ -700,14 +708,36 @@
       if (m.desc) title += '\n' + m.desc;
       mk.bindTooltip(esc(title).replace(/\n/g, '<br>'), { direction: 'top', offset: [0, -18] });
       mk.on('dragend', function () {
-        var ll = mk.getLatLng(); m.lat = ll.lat; m.lng = ll.lng; save(); renderLegend();
+        var ll = mk.getLatLng(); m.lat = ll.lat; m.lng = ll.lng;
+        repositionMarkLabel(m); save(); renderLegend();
       });
       if (m.kind !== 'km' && m.kind !== 'start' && m.kind !== 'end') {
         mk.on('click', function () { focusMark(m); });
       }
       m.layer = mk;
     });
+    renderMarkLabels();
     renderLegend();
+  }
+
+  function renderMarkLabels() {
+    state.marks.forEach(function (m, i) {
+      if (m.label) { map.removeLayer(m.label); m.label = null; }
+      if (!m.showLabel) return;
+      var text = m.name || '';
+      if (m.kind === 'km') text = m.name;            // 里程桩本身就短
+      if (!text) return;
+      var html = '<div class="lbl" style="color:' + esc(m.color === '#ffffff' ? '#e8eef4' : m.color) +
+        '">' + esc(text) + '</div>';
+      m.label = L.marker([m.lat, m.lng], {
+        interactive: false,
+        icon: L.divIcon({ className: '', html: html, iconSize: [0, 0], iconAnchor: [0, 34] })
+      }).addTo(map);
+    });
+  }
+
+  function repositionMarkLabel(m) {
+    if (m.label) m.label.setLatLng([m.lat, m.lng]);
   }
 
   // ---------------------------------------------------------------- 工具层
@@ -731,7 +761,7 @@
       sampleByDistance(latlngs, cum, step).forEach(function (s) {
         state.marks.push({ id: uid('mk'), kind: 'km', name: (s.dist / 1000).toFixed(0) + ' km',
                            desc: t.name, lat: s.latlng[0], lng: s.latlng[1],
-                           color: t.color, auto: true, seq: false, trackId: t.id });
+                           color: t.color, auto: true, seq: false, trackId: t.id, showLabel: true });
       });
     });
     if (!any) { alert('没有可用的轨迹（请先导入并显示轨迹）'); return; }
@@ -746,9 +776,11 @@
       any = true;
       var a = t.points[0], b = t.points[t.points.length - 1];
       state.marks.push({ id: uid('mk'), kind: 'start', name: t.name + ' 起点', desc: '',
-                         lat: a.lat, lng: a.lng, color: '#3ecf8e', auto: true, seq: false });
+                         lat: a.lat, lng: a.lng, color: '#3ecf8e', auto: true, seq: false,
+                         showLabel: true });
       state.marks.push({ id: uid('mk'), kind: 'end', name: t.name + ' 终点', desc: '',
-                         lat: b.lat, lng: b.lng, color: '#ff6b6b', auto: true, seq: false });
+                         lat: b.lat, lng: b.lng, color: '#ff6b6b', auto: true, seq: false,
+                         showLabel: true });
     });
     if (!any) { alert('没有可用的轨迹'); return; }
     renderMarks(); renderMarkList();
@@ -789,7 +821,8 @@
       (t.waypoints || []).forEach(function (w) {
         any = true;
         state.marks.push({ id: uid('mk'), kind: 'waypoint', name: w.name || '路径点', desc: w.desc || '',
-                           lat: w.lat, lng: w.lng, color: '#ffb454', auto: true, seq: false });
+                           lat: w.lat, lng: w.lng, color: '#ffb454', auto: true, seq: false,
+                           showLabel: true });
       });
     });
     if (!any) { alert('已导入的文件里没有路径点（KML Placemark / GPX wpt）'); return; }
@@ -860,6 +893,13 @@
           '<label title="线宽"><input type="number" data-act="weight" value="' + t.weight + '" min="1" max="12" step="1" style="width:46px;padding:2px 4px;font-size:11px"></label>' +
           '<button class="tiny secondary" data-act="fit">定位</button>' +
         '</div>' +
+        '<div class="track-tools" style="gap:6px">' +
+          '<span class="muted" style="font-size:11px">透明</span>' +
+          '<input type="range" data-act="opacity" min="10" max="100" step="5" value="' +
+            Math.round(t.opacity * 100) + '" style="flex:1;min-width:60px;margin:0">' +
+          '<span class="muted" style="font-size:11px;width:32px;text-align:right" data-op>' +
+            Math.round(t.opacity * 100) + '%</span>' +
+        '</div>' +
         '<div class="track-tools"><div class="swatches">' + sw + '</div></div>';
       box.appendChild(d);
     });
@@ -875,6 +915,8 @@
       d.className = 'mk';
       d.innerHTML = '<span class="dot" style="background:' + esc(m.color) + '"></span>' +
         '<span class="t" title="' + esc(m.desc || '') + '">' + esc(m.name || '(未命名)') + '</span>' +
+        '<label title="在地图上常驻显示名称"><input type="checkbox" data-act="mlabel"' +
+          (m.showLabel ? ' checked' : '') + '>名</label>' +
         '<button class="tiny secondary" data-act="fit">定位</button>' +
         '<button class="tiny secondary" data-act="edit">改</button>' +
         '<button class="tiny danger" data-act="del">✕</button>';
@@ -888,7 +930,8 @@
   }
   function addMark(lat, lng, name) {
     var m = { id: uid('mk'), kind: 'pin', name: name || '', desc: '', lat: lat, lng: lng,
-              color: MARK_COLORS[state.marks.length % MARK_COLORS.length], auto: false, seq: true };
+              color: MARK_COLORS[state.marks.length % MARK_COLORS.length], auto: false, seq: true,
+              showLabel: true };
     state.marks.push(m);
     afterMarkChange();
     editMark(m, true);
@@ -951,7 +994,7 @@
         id: uid('tr'), name: tr.name || filename, points: tr.points, visible: true,
         color: tr.color || PALETTE[state.tracks.length % PALETTE.length],
         weight: tr.weight && tr.weight > 0 ? Math.min(12, Math.round(tr.weight)) : 4,
-        showLabel: true, showWpt: true, kind: tr.kind || 'track',
+        showLabel: true, showWpt: true, opacity: 1, kind: tr.kind || 'track',
         waypoints: [], layer: null, label: null,
         distance: st.distance, ascent: st.ascent, eleMin: st.eleMin, eleMax: st.eleMax
       });
@@ -1135,7 +1178,8 @@
       base: state.base, baseOpacity: state.baseOpacity, showLegend: state.showLegend,
       tracks: state.tracks.map(function (t) {
         return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
-                 showLabel: t.showLabel, kind: t.kind, points: t.points, waypoints: t.waypoints };
+                 showLabel: t.showLabel, opacity: t.opacity,
+                 kind: t.kind, points: t.points, waypoints: t.waypoints };
       }),
       marks: state.marks.filter(function (m) { return !m.auto; }).map(function (m) {
         return { kind: m.kind, name: m.name, desc: m.desc, lat: m.lat, lng: m.lng,
@@ -1155,13 +1199,15 @@
       var st = statsOf(t.points || []);
       return { id: uid('tr'), name: t.name || '轨迹', points: t.points || [], visible: t.visible !== false,
                color: t.color || PALETTE[0], weight: t.weight || 4, showLabel: t.showLabel !== false,
-               showWpt: true, kind: t.kind || 'track', waypoints: t.waypoints || [],
+               showWpt: true, opacity: typeof t.opacity === 'number' ? t.opacity : 1,
+               kind: t.kind || 'track', waypoints: t.waypoints || [],
                layer: null, label: null, distance: st.distance, ascent: st.ascent,
                eleMin: st.eleMin, eleMax: st.eleMax };
     });
     state.marks = (d.marks || []).map(function (m) {
       return { id: uid('mk'), kind: m.kind || 'pin', name: m.name || '', desc: m.desc || '',
-               lat: m.lat, lng: m.lng, color: m.color || '#ff6b6b', auto: false, seq: !!m.seq };
+               lat: m.lat, lng: m.lng, color: m.color || '#ff6b6b', auto: false, seq: !!m.seq,
+               showLabel: m.showLabel !== false };
     });
     state.title = d.title || '';
     state.showLegend = !!d.showLegend;
@@ -1186,11 +1232,12 @@
           baseOpacity: state.baseOpacity, showLegend: state.showLegend,
           tracks: state.tracks.map(function (t) {
             return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
-                     showLabel: t.showLabel, kind: t.kind, points: t.points, waypoints: t.waypoints };
+                     showLabel: t.showLabel, opacity: t.opacity,
+                     kind: t.kind, points: t.points, waypoints: t.waypoints };
           }),
           marks: state.marks.filter(function (m) { return !m.auto; }).map(function (m) {
             return { kind: m.kind, name: m.name, desc: m.desc, lat: m.lat, lng: m.lng,
-                     color: m.color, seq: m.seq };
+                     color: m.color, seq: m.seq, showLabel: m.showLabel };
           }) };
         localStorage.setItem(STORE_KEY, JSON.stringify(data));
       } catch (e) {
@@ -1270,6 +1317,20 @@
       document.getElementById('opVal').textContent = this.value + '%';
       setBasemapOpacity(v); save();
     });
+    document.getElementById('trOp').addEventListener('input', function () {
+      var v = Math.max(0.1, (parseInt(this.value, 10) || 100) / 100);
+      document.getElementById('trOpVal').textContent = this.value + '%';
+      state.tracks.forEach(function (t) { t.opacity = v; renderTrack(t); });
+      renderTrackList(); save();
+    });
+    document.getElementById('btnAllMarkLbl').addEventListener('click', function () {
+      state.marks.forEach(function (m) { m.showLabel = true; });
+      renderMarkLabels(); renderMarkList(); save();
+    });
+    document.getElementById('btnMarkLblOff').addEventListener('click', function () {
+      state.marks.forEach(function (m) { m.showLabel = false; });
+      renderMarkLabels(); renderMarkList(); save();
+    });
 
     // --- 轨迹列表（事件委托） ---
     var tl = document.getElementById('trackList');
@@ -1305,6 +1366,11 @@
         t.name = e.target.value; renderLabels(); renderLegend(); save();
       } else if (act === 'weight') {
         t.weight = Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 4));
+        renderTrack(t); save();
+      } else if (act === 'opacity') {
+        t.opacity = Math.max(0.1, Math.min(1, (parseInt(e.target.value, 10) || 100) / 100));
+        var out = e.target.parentNode.querySelector('[data-op]');
+        if (out) out.textContent = Math.round(t.opacity * 100) + '%';
         renderTrack(t); save();
       }
     });
@@ -1345,9 +1411,19 @@
       else if (act === 'edit') editMark(m, false);
       else if (act === 'del') {
         if (m.layer) map.removeLayer(m.layer);
+        if (m.label) map.removeLayer(m.label);
         state.marks = state.marks.filter(function (x) { return x !== m; });
         afterMarkChange();
       }
+    });
+    ml.addEventListener('change', function (e) {
+      if (e.target.getAttribute('data-act') !== 'mlabel') return;
+      var node = e.target.closest('.mk');
+      var idx = Array.prototype.indexOf.call(ml.children, node);
+      var m = state.marks[idx];
+      if (!m) return;
+      m.showLabel = e.target.checked;
+      renderMarkLabels(); save();
     });
 
     // --- 地图浮层按钮 ---
@@ -1404,6 +1480,8 @@
       clearToolLayers();
       state.tracks = []; state.marks = []; state.title = '';
       document.getElementById('mapTitle').value = '';
+      document.getElementById('trOp').value = 100;
+      document.getElementById('trOpVal').textContent = '100%';
       syncTitle(); renderTrackList(); renderMarkList(); renderLegend(); save();
     });
 
