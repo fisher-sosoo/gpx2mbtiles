@@ -85,7 +85,9 @@ class Settings:
         self.buffer_min = _env_float("BUFFER_MIN_METERS", 0.0, 0.0, 100000.0)
         self.buffer_max = _env_float("BUFFER_MAX_METERS", 10000.0, 0.0, 200000.0)
         self.max_gpx_bytes = _env_int("MAX_GPX_BYTES", 52428800, 1024, 1073741824)
-        self.disk_min_free_bytes = _env_int("DISK_MIN_FREE_BYTES", 104857600, 10485760, 1099511627776)
+        # 低于此剩余空间时停止写缓存（默认 3GB；8G 缓存 + 3G 余量，40G 盘安全）
+        self.disk_min_free_bytes = _env_int(
+            "DISK_MIN_FREE_BYTES", 3221225472, 104857600, 1099511627776)
         self.auth_token = os.getenv("AUTH_TOKEN", "").strip()
 
         # ---- 瓦片代理缓存（/api/tile/...）----
@@ -93,9 +95,10 @@ class Settings:
         # 并存，违反规范，Chrome 报 ERR_BLOCKED_BY_ORB）。改由服务端代取，
         # 同源返回并落盘缓存，重复浏览不再消耗流量。
         self.tile_cache_enabled = os.getenv("TILE_CACHE_ENABLED", "1").strip().lower()             not in ("0", "false", "no", "off")
-        # 缓存总容量上限（默认 2GB；服务器 40G 盘，留足余量给成品文件）
+        # 缓存总容量上限（默认 8GB；服务器 40G 盘、已用约 9G，
+        # 留足余量给成品文件和系统）。瓦片是只读缓存，丢了会自动回源，可安全淘汰。
         self.tile_cache_max_bytes = _env_int(
-            "TILE_CACHE_MAX_BYTES", 2147483648, 10485760, 107374182400)
+            "TILE_CACHE_MAX_BYTES", 8589934592, 10485760, 107374182400)
         # 单张瓦片超过此大小不缓存（防止异常响应撑爆磁盘）
         self.tile_cache_max_tile_bytes = _env_int(
             "TILE_CACHE_MAX_TILE_BYTES", 5242880, 10240, 52428800)

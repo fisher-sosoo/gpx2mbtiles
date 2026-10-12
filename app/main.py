@@ -94,8 +94,37 @@ def _get_tile_fetcher():
     return _tile_fetcher
 
 
+def _tile_etag(layer: str, z: int, x: int, y: int, body: bytes) -> str:
+    """瓦片内容的强 ETag。
+
+    同一 (layer,z,x,y) 的瓦片内容恒定，用内容哈希即可；
+    不用 mtime（回源时间不同会导致同一瓦片 ETag 变化，白白失效浏览器缓存）。
+    """
+    import hashlib
+    h = hashlib.sha1(body).hexdigest()[:20]
+    return f'"{layer}-{z}-{x}-{y}-{h}"'
+
+
+def _tile_response(body: bytes, state: str, layer: str, z: int, x: int, y: int,
+                   request: Request | None = None) -> Response:
+    """统一的瓦片响应：带 immutable 缓存头与 ETag。"""
+    headers = _tile_cache_headers(layer, z, x, y, body, state)
+    return Response(content=body, media_type="image/png", headers=headers)
+
+
+def _tile_cache_headers(layer: str, z: int, x: int, y: int, body: bytes, state: str) -> dict:
+    return {
+        # 瓦片按坐标恒定，可长期immutable：浏览器直接命中本地副本，
+        # 连 304 条件请求都不会发。这解决了"反复放大缩小重复请求"的问题
+        # （实测快速缩放时重复率高达 75%）。
+        "Cache-Control": "public, max-age=2592000, immutable",
+        "ETag": _tile_etag(layer, z, x, y, body),
+        "X-Tile-Cache": state,
+    }
+
+
 @app.get("/api/tile/{layer}/{z}/{x}/{y}")
-async def get_tile(layer: str, z: int, x: int, y: int):
+async def get_tile(layer: str, z: int, x: int, y: int) -> Response:
     """瓦片代理：同源返回，带磁盘缓存。
 
     不加 require_api_key：Leaflet 的 <img> 请求带不了自定义头，
@@ -110,12 +139,7 @@ async def get_tile(layer: str, z: int, x: int, y: int):
     # 1) 命中缓存
     cached = tile_cache.get(layer, z, x, y)
     if cached is not None:
-        return Response(
-            content=cached,
-            media_type="image/png",
-            headers={"Cache-Control": "public, max-age=604800",
-                     "X-Tile-Cache": "HIT"},
-        )
+        return _tile_response(cached, "HIT", layer, z, x, y)
 
     # 2) 回源（按图层切换 settings 里的模板）
     fetcher = _get_tile_fetcher()
@@ -152,12 +176,7 @@ async def get_tile(layer: str, z: int, x: int, y: int):
 
     # 3) 落盘并返回
     tile_cache.put(layer, z, x, y, body)
-    return Response(
-        content=body,
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=604800",
-                 "X-Tile-Cache": "MISS"},
-    )
+    return _tile_response(body, "MISS", layer, z, x, y)
 
 
 @app.get("/api/tilecache/stats")
