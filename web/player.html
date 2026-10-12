@@ -396,6 +396,13 @@
       opts.crossOrigin = true;                   // 配合导出 PNG 读取像素
       opts.errorTileUrl = TRANSPARENT_TILE;      // 403/404 时用透明图占位，不显示碎图
 
+      // 换底图前把上一轮残留的队列与计数清空，避免旧任务占着槽位
+      if (key === 'windy') {
+        queue.length = 0;
+        lastStart = 0;
+        if (pumpTimer !== null) { clearTimeout(pumpTimer); pumpTimer = null; }
+      }
+
       baseLayer = L.tileLayer(b.url, opts);
       // 必须先装节流再挂到地图上：addTo 会立刻触发首屏瓦片加载，
       // 若此时还没替换 createTile，那一批请求会完全绕过限流
@@ -435,13 +442,15 @@
   var MAX_PARALLEL = 2;
   var MIN_GAP = 220;          // ms，两个请求之间的最小间隔
   var SPEED_KEY = 'normal';
-  var inFlight = 0, lastStart = 0, queue = [];
+  var lastStart = 0, queue = [];
 
   // 单飞调度器：保证同一时刻只有一个 pump 在等待，避免多个 setTimeout
   // 并存时一起触发、瞬间放行一大批请求（这正是之前"开局 16 个并发"的原因）。
+  // 固定速率发放：每次只发一个，发完就安排下一次。
+  // 槽位不依赖请求是否回调，因此个别请求永久挂起也不会拖垮整个队列。
   var pumpTimer = null;
   function schedulePump(delay) {
-    if (pumpTimer !== null) return;          // 已有待执行的调度，不重复排队
+    if (pumpTimer !== null) return;
     pumpTimer = setTimeout(function () {
       pumpTimer = null;
       pump();
@@ -450,21 +459,13 @@
 
   function pump() {
     if (!queue.length) return;
-    if (inFlight >= MAX_PARALLEL) return;    // 有人完成时会再调 schedulePump
     var wait = Math.max(0, MIN_GAP - (Date.now() - lastStart));
     if (wait > 0) { schedulePump(wait); return; }
 
     var job = queue.shift();
-    inFlight++; lastStart = Date.now();
-    var released = false;
-    job(function () {
-      if (released) return;
-      released = true;
-      inFlight = Math.max(0, inFlight - 1);
-      schedulePump(0);
-    });
-    // 还有余量就继续放行下一个（间隔由上面的 wait 控制）
-    if (queue.length && inFlight < MAX_PARALLEL) schedulePump(0);
+    lastStart = Date.now();
+    try { job.start(); } catch (e) { /* 单个瓦片失败不影响队列 */ }
+    if (queue.length) schedulePump(MIN_GAP);
   }
 
   // 包一层 createTile：把真实的图片加载放进队列里
@@ -485,7 +486,6 @@
     layer.createTile = function (coords, done) {
       var img = document.createElement('img');
       img.alt = '';
-      // Leaflet 会读取这些属性做定位/交互
       img.setAttribute('role', 'presentation');
       if (layer.options && layer.options.crossOrigin !== undefined) {
         if (layer.options.crossOrigin === true) img.crossOrigin = '';
@@ -495,22 +495,23 @@
       try { url = origGetUrl(coords); }
       catch (e) { url = ''; }
 
-      var finished = false, release = null;
+      var finished = false;
       function finish(err) {
         if (finished) return;
         finished = true;
         done(err, img);
-        if (release) release();
       }
+
       img.onload = function () { noteTileOK(); finish(null); };
       img.onerror = function () { noteTileError(); finish(new Error('tile')); };
 
       if (!url) { setTimeout(function () { finish(null); }, 0); return img; }
 
-      queue.push(function (releaseFn) {
-        release = releaseFn;
-        img.src = url;
-      });
+      // 槽位由调度器在 TILE_WATCHDOG 后无条件归还，与图片是否回调无关。
+      // 之前的设计是「图片 load/error 才归还槽位」，一旦某个请求永久挂起
+      // （被墙、被拦截、连接不返回），inFlight 就永远降不下来，整个队列停摆
+      // —— 这正是"切回 windy 后一个请求都不发"的原因。
+      queue.push({ src: url, start: function () { img.src = url; } });
       pump();
       return img;
     };
@@ -1679,30 +1680,43 @@
     document.getElementById('mtTitle').classList.toggle('on', !!state.title);
   }
 
-  // 403 时自动降速并提示；恢复后自动还原
+  // 403 时临时降速并提示，随后自动回到用户选择的档位。
+  // 注意：降速只改 MIN_GAP，不影响队列推进；恢复靠空闲计时，
+  // 避免"降速后再也回不来"（之前 gap 卡在 370ms 且不再恢复）。
   var throttleNotice = false;
-  var errored = 0, loaded = 0;
+  var recoverAt = 0;           // 计划恢复的时间戳
+  var recoverTimer = null;
+
+  // 降速上限要克制：太高会让可用网络下也慢得不可用。
   function noteTileError() {
-    errored++;
-    // 连续出错说明被限流：临时降到比当前档位更慢
-    if (errored >= 3) { MIN_GAP = Math.min(2000, MIN_GAP + 150); MAX_PARALLEL = 1; }
+    var base = (SPEED[SPEED_KEY] || SPEED.normal).gap;
+    MIN_GAP = Math.min(900, Math.max(MIN_GAP, base) + 100);
+    scheduleRecover(12000);
     if (throttleNotice) return;
     throttleNotice = true;
     var el = document.getElementById('saveHint');
     if (el) el.textContent = '⚠️ 瓦片源限流中，已自动降速重试…（Windy 对密集请求会返回 403）';
   }
+
+  // 有成功就尽快恢复；不因偶发错误无限拖延（每次错误都重置计时器会导致
+  // 只要还有零星失败，速度就永远回不来）。
   function noteTileOK() {
-    loaded++;
-    // 连续成功若干次后，回到用户选择的档位
-    if (loaded >= 10 && (throttleNotice || MIN_GAP > (SPEED[SPEED_KEY] || SPEED.normal).gap)) {
-      loaded = 0; errored = 0;
-      applySpeed(SPEED_KEY);
-      if (throttleNotice) {
-        throttleNotice = false;
-        var el = document.getElementById('saveHint');
-        if (el) el.textContent = '✓ 瓦片加载已恢复正常';
-      }
-    }
+    if (!throttleNotice) return;
+    scheduleRecover(2500);
+  }
+
+  function scheduleRecover(ms) {
+    var target = Date.now() + ms;
+    if (recoverAt && recoverAt <= target) return;   // 已有更早的恢复计划
+    recoverAt = target;
+    if (recoverTimer) clearTimeout(recoverTimer);
+    recoverTimer = setTimeout(function () {
+      recoverAt = 0;
+      MIN_GAP = (SPEED[SPEED_KEY] || SPEED.normal).gap;
+      throttleNotice = false;
+      var el = document.getElementById('saveHint');
+      if (el) el.textContent = '✓ 瓦片加载速度已恢复到所选档位';
+    }, ms);
   }
 
   function bindUI() {

@@ -57,8 +57,6 @@ jobs:
             echo "=== Deploying: $TAG ==="
             cd $APP_DIR || exit 1
 
-            git fetch --tags || exit 1
-
             # 部署机不应有本地改动；残留的手工改动会让 checkout 直接失败
             # （曾导致连续三次部署失败且原因不可见）。这里先丢弃已跟踪文件的改动，
             # 未跟踪的运行时文件（.last_success / scripts/*.py）保持不动。
@@ -66,6 +64,28 @@ jobs:
               echo "=== 丢弃部署机上的本地改动 ==="
               git diff --name-only
               git checkout -- . || exit 1
+            fi
+
+            # 部署机上的本地 tag 若与远端同名但指向不同提交，git fetch 会拒绝更新
+            # 并返回非零，从而中断整个部署（实际发生过：v1.2.3/v1.2.4 被重建后
+            # 服务器上仍是旧对象）。--force 让远端 tag 覆盖本地，事后清理本地多余 tag。
+            git tag -l | while read -r t; do
+              if ! git ls-remote --exit-code --tags origin "refs/tags/$t" >/dev/null 2>&1; then
+                echo "清理远端已不存在的本地 tag: $t"
+                git tag -d "$t" >/dev/null
+              fi
+            done
+
+            if ! git fetch --tags --force --prune; then
+              echo "::error::git fetch 失败（代理/网络问题？服务器 git 走 http.proxy=127.0.0.1:7893）"
+              echo "现有 HEAD: $(git log --oneline -1)"
+              exit 1
+            fi
+
+            # 确认目标版本确实存在，避免拿到过期代码却以为部署成功
+            if ! git rev-parse --verify --quiet "$TAG^{commit}" >/dev/null; then
+              echo "::error::找不到版本 $TAG（fetch 后仍不存在）"
+              exit 1
             fi
 
             git checkout "$TAG" || exit 1
