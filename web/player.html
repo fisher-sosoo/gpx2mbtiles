@@ -170,8 +170,8 @@
     <div class="card">
       <h2>底图</h2>
       <select id="baseSel">
-        <option value="windy" selected>Windy 户外</option>
-        <option value="otm">OpenTopoMap 地形图</option>
+        <option value="otm" selected>OpenTopoMap 地形图（默认，稳定）</option>
+        <option value="windy">Windy 户外 ⚠️</option>
         <option value="osm">OpenStreetMap 标准</option>
         <option value="none">无底图（纯轨迹）</option>
       </select>
@@ -181,12 +181,14 @@
       <input type="range" id="trOp" min="10" max="100" value="100" style="width:100%">
       <label>瓦片加载速度 <span class="muted" id="tileSpeedVal"></span></label>
       <select id="tileSpeed">
-        <option value="safe">🐢 保守（最不容易被限流，推荐）</option>
-        <option value="normal" selected>🚶 正常</option>
-        <option value="fast">⚡ 快速（可能触发 403）</option>
+        <option value="safe" selected>🐢 保守（默认，最不容易被限流）</option>
+        <option value="normal">🚶 正常</option>
+        <option value="fast">⚡ 快速（容易触发 403）</option>
       </select>
       <div class="hint">底图调淡可以让轨迹更清楚；改单条轨迹用列表里的滑块。<br>
-        Windy 对密集请求会返回 403，被限流时页面会自动降速并提示。</div>
+        <b>建议用 OpenTopoMap</b>：Windy 的响应头不符合 CORS 规范
+        （<code>credentials:true</code> 与 <code>origin:*</code> 并存），
+        Chrome 会拦截为 <code>ERR_BLOCKED_BY_ORB</code>，可能整片空白。</div>
     </div>
 
     <div class="card">
@@ -312,7 +314,7 @@
     tracks: [],       // 轨迹
     marks: [],        // 手动标记
     toolLayers: [],   // 工具层（里程桩/起终点/箭头/KML 路径点）
-    base: 'windy',
+    base: 'otm',
     baseOpacity: 1,
     showLegend: false,
     legendPos: null,
@@ -393,8 +395,10 @@
       opts.updateWhenIdle = (key === 'windy');
       opts.updateWhenZooming = false;            // 缩放动画期间不发请求
       opts.keepBuffer = 1;                       // 视口外只留 1 圈，减少来回平移的重复请求
-      opts.crossOrigin = true;                   // 配合导出 PNG 读取像素
-      opts.errorTileUrl = TRANSPARENT_TILE;      // 403/404 时用透明图占位，不显示碎图
+      // 注意：不要设 crossOrigin。Windy 在 CORS 模式下会拒绝请求，
+      // 表现为图片返回 200 但 onload 不触发（浏览器按 CORS 失败处理），
+      // 地图会整片空白。导出 PNG 时改用独立 Image 重新拉取瓦片（见 exportPng）。
+      opts.errorTileUrl = TRANSPARENT_TILE;      // 失败时用透明图占位，不显示碎图
 
       // 换底图前把上一轮残留的队列与计数清空，避免旧任务占着槽位
       if (key === 'windy') {
@@ -434,20 +438,24 @@
   //   - 每个请求之间至少间隔 MIN_GAP 毫秒
   // 403 时退避重试，并临时把速度降得更低。
   var TRANSPARENT_TILE = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  // Windy 对短时间内的密集请求会返回 403（实测浏览器侧约 29 个请求里
+  // 有 16 个被拒）。默认用保守档，用户可自行放宽。
   var SPEED = {
-    safe:   { parallel: 1, gap: 500 },
-    normal: { parallel: 2, gap: 220 },
-    fast:   { parallel: 4, gap: 80 }
+    safe:   { parallel: 1, gap: 650 },
+    normal: { parallel: 1, gap: 320 },
+    fast:   { parallel: 2, gap: 120 }
   };
-  var MAX_PARALLEL = 2;
-  var MIN_GAP = 220;          // ms，两个请求之间的最小间隔
-  var SPEED_KEY = 'normal';
+  var MAX_PARALLEL = 1;
+  var MIN_GAP = 500;          // ms，两个请求之间的最小间隔
+  var SPEED_KEY = 'safe';     // 默认保守：Windy 对密集请求会返回 403
   var lastStart = 0, queue = [];
 
   // 单飞调度器：保证同一时刻只有一个 pump 在等待，避免多个 setTimeout
   // 并存时一起触发、瞬间放行一大批请求（这正是之前"开局 16 个并发"的原因）。
   // 固定速率发放：每次只发一个，发完就安排下一次。
   // 槽位不依赖请求是否回调，因此个别请求永久挂起也不会拖垮整个队列。
+  function scheduleRetry(fn, delay) { setTimeout(fn, Math.max(0, delay || 0)); }
+
   var pumpTimer = null;
   function schedulePump(delay) {
     if (pumpTimer !== null) return;
@@ -487,10 +495,6 @@
       var img = document.createElement('img');
       img.alt = '';
       img.setAttribute('role', 'presentation');
-      if (layer.options && layer.options.crossOrigin !== undefined) {
-        if (layer.options.crossOrigin === true) img.crossOrigin = '';
-        else if (layer.options.crossOrigin) img.crossOrigin = layer.options.crossOrigin;
-      }
       var url;
       try { url = origGetUrl(coords); }
       catch (e) { url = ''; }
@@ -502,17 +506,35 @@
         done(err, img);
       }
 
-      img.onload = function () { noteTileOK(); finish(null); };
-      img.onerror = function () { noteTileError(); finish(new Error('tile')); };
-
       if (!url) { setTimeout(function () { finish(null); }, 0); return img; }
 
-      // 槽位由调度器在 TILE_WATCHDOG 后无条件归还，与图片是否回调无关。
-      // 之前的设计是「图片 load/error 才归还槽位」，一旦某个请求永久挂起
-      // （被墙、被拦截、连接不返回），inFlight 就永远降不下来，整个队列停摆
-      // —— 这正是"切回 windy 后一个请求都不发"的原因。
-      queue.push({ src: url, start: function () { img.src = url; } });
-      pump();
+      // 403/失败时重试：Windy 在密集请求下会返回 403，此前失败即放弃，
+      // 结果是一片空白瓦片。这里带退避重试，成功后才交给 Leaflet。
+      var attempt = 0;
+      var MAX_TRIES = 4;
+
+      img.onload = function () { noteTileOK(); finish(null); };
+      img.onerror = function () {
+        attempt++;
+        noteTileError();
+        if (attempt >= MAX_TRIES) { finish(new Error('tile failed')); return; }
+        // 退避后重新排队（每次多等一会儿）
+        var backoff = 400 * attempt;
+        scheduleRetry(function () {
+          if (finished) return;
+          next();
+        }, backoff);
+      };
+
+      function next() {
+        if (finished) return;
+        // 重试时加时间戳绕开浏览器对失败响应的缓存
+        var u = attempt > 0 ? url + (url.indexOf('?') >= 0 ? '&' : '?') + '_r=' + attempt : url;
+        queue.push({ src: u, start: function () { img.src = u; } });
+        pump();
+      }
+
+      next();
       return img;
     };
   }
@@ -1398,7 +1420,10 @@
     return tpl.replace('{z}', z).replace('{x}', x).replace('{y}', y)
               .replace('{s}', 'abc'[(x + y) % 3]);
   }
-  // 取瓦片像素：crossOrigin 已在图层上开启，缓存命中通常同源可用
+  // 取瓦片像素用于导出。用 crossOrigin='anonymous' 重新拉取：
+  // 页面上的瓦片没有开 CORS（开了会导致 Windy 拒绝加载），
+  // 直接 drawImage 会污染画布导致 toBlob 失败，所以这里独立请求。
+  // 若瓦片源不支持 CORS，drawImage 会抛错，由调用方跳过该瓦片（底图留空）。
   function loadTileImage(url) {
     return new Promise(function (res, rej) {
       var im = new Image();
@@ -1768,6 +1793,12 @@
     // --- 底图 ---
     document.getElementById('baseSel').addEventListener('change', function () {
       setBasemap(this.value, state.baseOpacity); save();
+      var hint = document.getElementById('saveHint');
+      if (hint) {
+        hint.textContent = this.value === 'windy'
+          ? '⚠️ Windy 的响应头不符合 CORS 规范（credentials:true + origin:*），Chrome 会拦截为 ERR_BLOCKED_BY_ORB，部分网络下会整片空白。建议用 OpenTopoMap。'
+          : '底图已切换为「' + this.options[this.selectedIndex].text + '」';
+      }
     });
     var speedSel = document.getElementById('tileSpeed');
     speedSel.value = SPEED_KEY;

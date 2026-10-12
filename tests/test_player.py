@@ -1,4 +1,4 @@
-﻿"""回放页（web/player.html）的前端回归测试。
+"""回放页（web/player.html）的前端回归测试。
 
 这些测试不启动浏览器，只做静态检查 + 用 Node 打桩跑纯函数，
 目的是防止「改了 HTML 却把内联 JS 改出语法错误」这类问题重演
@@ -86,8 +86,38 @@ def test_player_has_core_features():
         "exportGpx", "exportJson",                  # 导出
         "drawLegendCanvas", "drawPolyline",         # PNG 截图（直接绘制到 canvas）
         "projectPoint",                             # 经纬度 -> 像素投影
+        "scheduleRetry", "MAX_TRIES",               # 失败瓦片带退避重试
     ):
         assert snippet in html, f"回放页缺少功能要素: {snippet}"
+
+
+def test_default_basemap_is_otm():
+    """默认底图必须是 OpenTopoMap。
+
+    Windy 的响应头同时带 access-control-allow-credentials:true 和
+    access-control-allow-origin:*（CORS 规范禁止的组合），Chrome 会把它
+    判为 ERR_BLOCKED_BY_ORB，导致整片底图空白。实测：
+        OTM  -> 32 个请求全 200，16/16 瓦片加载
+        Windy-> ERR_BLOCKED_BY_ORB
+    因此默认用 OTM，Windy 仅作为可选项保留并附警告。
+    """
+    html = _read(PLAYER)
+    assert "base: 'otm'" in html, "默认底图应为 otm"
+    assert 'value="otm" selected' in html, "底图下拉默认应选中 otm"
+    # Windy 仍可作为可选项，但要有警告说明
+    assert 'value="windy"' in html, "Windy 应保留为可选项"
+    assert "ERR_BLOCKED_BY_ORB" in html, "Windy 选项旁应有 CORS 问题说明"
+
+
+def test_tile_layer_does_not_force_cors():
+    """底图不能设 crossOrigin。
+
+    设了会让浏览器用 CORS 模式请求，Windy 在该模式下会被判失败
+    （图片返回 200 但 onload 不触发），地图整片空白。
+    PNG 导出改用独立 Image 拉取，不依赖页面上的瓦片元素。
+    """
+    html = _read(PLAYER)
+    assert "opts.crossOrigin" not in html, "底图不应开启 crossOrigin"
 
 
 def test_player_does_not_touch_server_api():
