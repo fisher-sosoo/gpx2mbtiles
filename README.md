@@ -1,10 +1,47 @@
-# GPX-to-MBTiles 云服务
+# GPX 工具：离线地图生成 + 轨迹回放
 
-> 云服务器负责瓦片下载与 mbtiles 组装；手机浏览器上传 GPX、查看进度、下载成品 .mbtiles 导入 Avenza / Guru Maps 离线导航。
+> 两个页面，一套服务：
+> - **📦 生成离线地图**（`/`）：手机上传 GPX → 云服务器下载瓦片 → 生成 .gpkg / .mbtiles 导入 Avenza / Guru Maps 离线导航。**行前准备用。**
+> - **🎬 轨迹回放与分析**（`/player.html`）：PC 端导入多条 GPX / KML / KMZ 叠加在地图上，配色、标注、做截图。**行程结束后做分析分享用，纯前端零服务器开销。**
 >
 > ⚠️ 仅限个人自用：Windy-Outdoor 服务条款禁止批量爬取瓦片。请务必开启限流与请求间隔、部署在海外节点、不得对外提供服务。
 
 > 📦 **云部署指南**（阿里云 ECS · 代理 · 自愈 · 安全加固 · GitHub Actions 自动部署）：见 [docs/DEPLOY.md](docs/DEPLOY.md)
+
+---
+
+## 🎬 轨迹回放与分析（PC 端，纯前端）
+
+行程结束后把多条轨迹丢进地图做分析、标注、出图，用于写文章配图。
+
+**关键性质：完全跑在浏览器里，打开之后不消耗任何服务器资源**——不调用 `/api/*`，瓦片直连 Windy / OpenTopoMap（PC 自备网络即可），解析、渲染、截图全部本地完成。
+
+### 能做什么
+
+| 能力 | 说明 |
+|---|---|
+| **多文件导入** | 拖拽或点选，一次可导多条；支持 **GPX / KML / KMZ**（KMZ 用浏览器原生 `DecompressionStream` 解压，无需第三方库） |
+| **多轨迹叠加** | 同时显示多条轨迹，每条白描边垫底，任何底图上都清晰 |
+| 每条轨迹独立控制 | 改颜色（12 色调色板 + 取色器）、重命名、线宽、单独开关显示、名称标签开关、定位、删除 |
+| **标记与注释** | 地图上点选或「点图取坐标」加标记，可写名称 + 多行注释，标记可拖动微调；列表里可编辑/定位/删除 |
+| 行前工具 | 每 1/5/10 km 里程桩、起终点标记、方向箭头、导出 KML 内嵌路径点，统一由「工具层」管理可一键清除 |
+| 底图切换 | Windy 户外 / OpenTopoMap 地形图 / OSM 标准 / 无底图，可调不透明度 |
+| **截图分享** | 图例（自动带每条轨迹的颜色、里程、爬升）、地图标题，一键导出 PNG（1×/2×/3×） |
+| 导出与备份 | 导出标记 GPX（回灌 Avenza / Guru Maps）、导出/导入方案 JSON（跨设备迁移），改动自动存 localStorage |
+
+**快捷键**：`F` 缩放到全部 · `L` 图例 · `M` 加标记 · `Esc` 取消
+
+### 兼容性
+
+- KMZ 解压依赖 `DecompressionStream('deflate-raw')`：Chrome / Edge 80+、Safari 16.4+ 可用；不支持时会明确提示改用 GPX 或 KML。
+- 底图与 `html2canvas` 走 CDN，离线环境下请先切「无底图」。
+- 本地缓存有容量上限，轨迹很多很大时建议用「导出方案 JSON」留档。
+
+---
+
+## 📦 离线地图生成（服务端）
+
+云服务器负责瓦片下载与 mbtiles 组装；手机浏览器上传 GPX、查看进度、下载成品 .mbtiles 导入 Avenza / Guru Maps 离线导航。
 
 ## 功能
 
@@ -39,7 +76,7 @@
     .venv/bin/pip install -r requirements.txt
     cp .env.example .env      # 修改瓦片 URL 模板与代理
     ./run.sh                  # 默认 :8000
-    .venv/bin/python -m pytest -v   # 47 个测试，含端到端流程
+    .venv/bin/python -m pytest -v   # 含端到端流程与前端回归测试（回放页需 node 做语法检查）
 
 ## 部署（海外节点）
 
@@ -112,6 +149,7 @@
       tile_downloader.py  并发下载/限流/重试/封禁检测
       task_manager.py     任务账本（SQLite 持久化）/生命周期/清理
     web/index.html        手机前端（上传/预览/进度/下载）
+    web/player.html       PC 端轨迹回放与分析（纯前端：多轨迹/KML/KMZ/标注/截图导出）
     Dockerfile            容器镜像（python:3.12-slim，非 root）
     compose.yaml          一键部署：端口 8000 + ./data 数据卷
     .dockerignore         构建排除（venv/data/tests 等）

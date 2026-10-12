@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>轨迹回放 · GPX / KML / KMZ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#0e141b; --card:#1a2430; --line:#2a3848; --accent:#4da3ff; --ok:#3ecf8e;
+          --err:#ff6b6b; --warn:#ffb454; --muted:#8aa0b4; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height:100%; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
+         background:var(--bg); color:#e8eef4; overflow:hidden; }
+
+  /* ---------- 顶部 Tab ---------- */
+  .topbar { display:flex; align-items:center; gap:14px; padding:0 14px; height:46px;
+            background:var(--card); border-bottom:1px solid var(--line); }
+  .topbar .brand { font-weight:700; font-size:15px; white-space:nowrap; }
+  .tabs { display:flex; gap:4px; }
+  .tab { padding:8px 16px; border-radius:9px 9px 0 0; font-size:13.5px; font-weight:600;
+         color:var(--muted); text-decoration:none; cursor:pointer; }
+  .tab:hover { color:#cfe1f2; background:#20303f; }
+  .tab.active { background:var(--bg); color:var(--accent); }
+
+  /* ---------- 布局 ---------- */
+  .page { display:none; height:calc(100vh - 46px); }
+  .page.active { display:block; }
+  #playerPage.active { display:flex; }
+  #side { width:322px; flex-shrink:0; background:var(--card); border-right:1px solid var(--line);
+          overflow-y:auto; padding:12px; }
+  #mapWrap { flex:1; position:relative; min-width:0; }
+  #map { position:absolute; inset:0; background:#0d131a; }
+
+  /* ---------- 面板 ---------- */
+  .card { background:#16202b; border:1px solid var(--line); border-radius:12px;
+          padding:11px 12px; margin-bottom:11px; }
+  .card h2 { font-size:12.5px; margin:0 0 9px; color:#9fc2e8; font-weight:700;
+             letter-spacing:.4px; display:flex; justify-content:space-between; align-items:center; }
+  label { font-size:12px; color:#a9bccb; display:block; margin:8px 0 4px; }
+  input[type=text], input[type=number], select, textarea {
+    width:100%; background:#0f1822; border:1px solid var(--line); color:#e8eef4;
+    border-radius:8px; padding:7px 9px; font-size:13px; font-family:inherit; }
+  textarea { resize:vertical; min-height:52px; }
+  button { border:0; border-radius:9px; padding:9px 13px; font-size:13px; font-weight:600;
+           cursor:pointer; background:var(--accent); color:#06233f; font-family:inherit; }
+  button:hover:not(:disabled) { filter:brightness(1.1); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.secondary { background:#243547; color:#cfe1f2; }
+  button.danger { background:#5b2a2a; color:#ffc9c9; }
+  button.tiny { padding:5px 9px; font-size:11.5px; border-radius:7px; }
+  .btnrow { display:flex; gap:7px; margin-top:8px; }
+  .btnrow > button { flex:1; }
+  .hint { font-size:11.5px; color:#7890a4; margin-top:5px; line-height:1.5; }
+  .muted { color:var(--muted); font-size:12px; }
+
+  /* ---------- 拖放区 ---------- */
+  #drop { border:2px dashed var(--line); border-radius:12px; padding:18px 12px;
+          text-align:center; color:var(--muted); font-size:12.5px; cursor:pointer;
+          transition:.15s; line-height:1.6; }
+  #drop:hover, #drop.over { border-color:var(--accent); background:#16222e; color:#cfe1f2; }
+
+  /* ---------- 轨迹列表 ---------- */
+  .track { border:1px solid var(--line); border-radius:10px; padding:8px 9px;
+           margin-bottom:8px; background:#131c26; }
+  .track.sel { border-color:var(--accent); background:#152435; }
+  .track-head { display:flex; align-items:center; gap:7px; }
+  .track-head input[type=color] { width:26px; height:26px; padding:0; border:1px solid var(--line);
+           border-radius:6px; background:#0f1822; cursor:pointer; flex-shrink:0; }
+  .track-head input[type=checkbox] { width:15px; height:15px; accent-color:var(--accent);
+           cursor:pointer; flex-shrink:0; }
+  .track-name { flex:1; min-width:0; background:transparent; border:1px solid transparent;
+           padding:4px 5px; font-size:12.5px; font-weight:600; border-radius:6px; }
+  .track-name:hover { border-color:var(--line); }
+  .track-name:focus { border-color:var(--accent); background:#0f1822; outline:none; }
+  .track-meta { font-size:11px; color:#7890a4; margin:5px 0 0 26px; line-height:1.5; }
+  .track-tools { display:flex; gap:5px; margin:7px 0 0 26px; flex-wrap:wrap; align-items:center; }
+  .track-tools label { margin:0; font-size:11px; display:flex; align-items:center; gap:3px; }
+  .track-tools input[type=checkbox] { width:13px; height:13px; accent-color:var(--accent); }
+  .swatches { display:flex; gap:4px; flex-wrap:wrap; }
+  .sw { width:16px; height:16px; border-radius:4px; cursor:pointer; border:1px solid #0006; }
+
+  /* ---------- 标记列表 ---------- */
+  .mk { display:flex; align-items:center; gap:7px; padding:6px 7px; border-radius:8px;
+        margin-bottom:5px; background:#131c26; border:1px solid var(--line); font-size:12px; }
+  .mk .dot { width:14px; height:14px; border-radius:50%; flex-shrink:0; border:2px solid #fff3; }
+  .mk .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .empty { font-size:12px; color:#6b7f92; padding:6px 2px; }
+
+  /* ---------- 地图浮层 ---------- */
+  .map-tools { position:absolute; top:10px; right:10px; z-index:500; display:flex;
+               flex-direction:column; gap:7px; align-items:flex-end; }
+  .mt-btn { background:#1a2430ee; color:#cfe1f2; border:1px solid var(--line);
+            border-radius:9px; padding:8px 12px; font-size:12.5px; font-weight:600;
+            cursor:pointer; backdrop-filter:blur(6px); white-space:nowrap; }
+  .mt-btn:hover { background:#243547; }
+  .mt-btn.on { background:var(--accent); color:#06233f; border-color:var(--accent); }
+  .legend { position:absolute; left:12px; bottom:22px; z-index:500; background:#0e141bdd;
+            border:1px solid var(--line); border-radius:10px; padding:9px 12px;
+            font-size:12px; line-height:1.65; backdrop-filter:blur(6px); max-width:280px; }
+  .legend .li { display:flex; align-items:center; gap:7px; }
+  .legend .li .sw-line { width:20px; height:3px; border-radius:2px; flex-shrink:0; }
+  .legend .li .sw-dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; border:2px solid #fff6; }
+  .legend .sum { color:#9fc2e8; font-weight:700; margin-bottom:5px; font-size:12.5px; }
+  .map-title { position:absolute; left:12px; top:10px; z-index:500; background:#0e141bdd;
+               border:1px solid var(--line); border-radius:10px; padding:7px 12px;
+               font-size:14px; font-weight:700; backdrop-filter:blur(6px); max-width:50vw;
+               display:none; }
+
+  /* ---------- 标记图标 / 标签 ---------- */
+  .pin { width:22px; height:22px; border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+         border:2px solid #fff; box-shadow:0 2px 6px #0009; display:flex;
+         align-items:center; justify-content:center; }
+  .pin span { transform:rotate(45deg); font-size:10.5px; font-weight:700; color:#fff;
+              text-shadow:0 1px 2px #000a; }
+  .pin.wpt { border-radius:50%; transform:none; }
+  .pin.wpt span { transform:none; }
+  .lbl { background:#0e141bdd; border:1px solid #ffffff2e; border-radius:6px;
+         padding:1px 6px; font-size:11.5px; font-weight:600; white-space:nowrap;
+         text-shadow:0 1px 2px #000; }
+  .lbl.kml { font-size:10.5px; font-weight:500; opacity:.85; padding:0 4px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">🗺️ GPX 工具</div>
+  <div class="tabs">
+    <a class="tab" href="/">📦 生成离线地图</a>
+    <a class="tab active" href="/player.html">🎬 轨迹回放与分析</a>
+  </div>
+</div>
+
+<!-- ================= 生成器（沿用原页面，同源 iframe） ================= -->
+<div class="page" id="genPage">
+  <iframe id="genFrame" title="生成离线地图" style="width:100%;height:100%;border:0;display:block"></iframe>
+</div>
+
+<!-- ================= 轨迹回放 ================= -->
+<div class="page active" id="playerPage">
+
+  <div id="side">
+    <div class="card">
+      <h2>导入轨迹</h2>
+      <div id="drop">
+        <div style="font-size:22px">📁</div>
+        拖拽文件到此处，或点击选择<br>
+        <span style="font-size:11px">支持 GPX / KML / KMZ，可多选</span>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".gpx,.kml,.kmz" style="display:none">
+      <div class="hint">全部解析在浏览器本地完成，不上传服务器、不消耗服务器资源。</div>
+    </div>
+
+    <div class="card">
+      <h2>底图</h2>
+      <select id="baseSel">
+        <option value="windy" selected>Windy 户外</option>
+        <option value="otm">OpenTopoMap 地形图</option>
+        <option value="osm">OpenStreetMap 标准</option>
+        <option value="none">无底图（纯轨迹）</option>
+      </select>
+      <label>不透明度 <span class="muted" id="opVal">100%</span></label>
+      <input type="range" id="baseOp" min="20" max="100" value="100" style="width:100%">
+      <div class="hint">底图需 PC 自备网络（挂梯子）；此页面不会向你的服务器请求任何瓦片。</div>
+    </div>
+
+    <div class="card">
+      <h2>轨迹 <span class="muted" id="trackCount">0 条</span></h2>
+      <div id="trackList"><div class="empty">还没有轨迹，先导入文件</div></div>
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnFit">缩放到全部</button>
+        <button class="secondary tiny" id="btnAllOn">全部显示</button>
+        <button class="secondary tiny" id="btnAllLbl">全部标签</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>标记与注释 <span class="muted" id="markCount">0 个</span></h2>
+      <div id="markList"><div class="empty">点地图上的「＋ 添加标记」开始</div></div>
+      <div class="hint">标记可在地图上拖动定位；注释内容会随导出的 PNG 一起出现在图上。</div>
+    </div>
+
+    <div class="card">
+      <h2>行前工具</h2>
+      <label>里程桩间隔</label>
+      <div class="btnrow" style="margin-top:0">
+        <select id="kmSel" style="flex:1">
+          <option value="1">每 1 km</option>
+          <option value="5" selected>每 5 km</option>
+          <option value="10">每 10 km</option>
+        </select>
+        <button class="secondary tiny" id="btnKm" style="flex:0 0 84px">全部轨迹</button>
+      </div>
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnEndpoint">起终点标记</button>
+        <button class="secondary tiny" id="btnArrow">方向箭头</button>
+      </div>
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnWpt">KML 路径点</button>
+        <button class="secondary tiny danger" id="btnClearTool">清除工具层</button>
+      </div>
+      <div class="hint">里程桩 / 起终点 / 方向箭头由「工具层」统一管理，可一键清除，不会动你的手动标记。</div>
+    </div>
+
+    <div class="card">
+      <h2>分享与导出</h2>
+      <label>地图标题（显示在左上角，也会进 PNG）</label>
+      <input type="text" id="mapTitle" placeholder="例如：雨崩徒步 · 冰湖切尼色" maxlength="60">
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnLegend">图例</button>
+        <button class="secondary tiny" id="btnTitle">标题</button>
+      </div>
+      <label>导出 PNG 倍率（越高越清晰、越慢）</label>
+      <select id="pngScale">
+        <option value="1">1× 标准</option>
+        <option value="2" selected>2× 高清（推荐）</option>
+        <option value="3">3× 超清</option>
+      </select>
+      <div class="btnrow">
+        <button id="btnPng">📸 导出 PNG</button>
+      </div>
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnExpGpx">导出标记 GPX</button>
+        <button class="secondary tiny" id="btnExpJson">导出方案 JSON</button>
+      </div>
+      <div class="btnrow">
+        <button class="secondary tiny" id="btnImpJson">导入方案 JSON</button>
+        <button class="secondary tiny danger" id="btnReset">清空全部</button>
+      </div>
+      <input type="file" id="jsonInput" accept=".json" style="display:none">
+      <div class="hint" id="saveHint">改动会自动存进浏览器本地；导出方案 JSON 可跨设备/长期备份。</div>
+    </div>
+  </div>
+
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div class="map-title" id="mapTitleEl"></div>
+    <div class="map-tools">
+      <button class="mt-btn" id="mtMark">＋ 添加标记</button>
+      <button class="mt-btn" id="mtPick">✎ 点图取坐标</button>
+      <button class="mt-btn" id="mtLegend">图例</button>
+      <button class="mt-btn" id="mtTitle">标题</button>
+    </div>
+    <div class="legend" id="legend" style="display:none"></div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* =====================================================================
+   轨迹回放与分析 —— 纯前端，所有解析/渲染/导出均在浏览器完成。
+   不向本服务端发起任何地图瓦片请求（底图直连 Windy / OTM / OSM）。
+   ===================================================================== */
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------- 常量
+  var STORE_KEY = 'gpx2mbtiles_player_v1';
+  var BASEMAPS = {
+    windy: {
+      url: 'https://tiles.windy.com/v1/maptiles/outdoor/256/{z}/{x}/{y}/?lang=en',
+      opts: { maxZoom: 19, attribution: '© Windy · Seznam.cz' }
+    },
+    otm: {
+      url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      opts: { maxZoom: 17, subdomains: 'abc', attribution: '© OpenTopoMap (CC-BY-SA)' }
+    },
+    osm: {
+      url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      opts: { maxZoom: 19, subdomains: 'abc', attribution: '© OpenStreetMap' }
+    }
+  };
+  var PALETTE = ['#ff6b6b','#4da3ff','#3ecf8e','#ffb454','#c77dff','#f06595',
+                 '#22d3ee','#a3e635','#fb923c','#60a5fa','#f472b6','#facc15'];
+  var MARK_COLORS = ['#ff6b6b','#4da3ff','#3ecf8e','#ffb454','#c77dff','#ffffff'];
+
+  // ---------------------------------------------------------------- 状态
+  var state = {
+    tracks: [],       // 轨迹
+    marks: [],        // 手动标记
+    toolLayers: [],   // 工具层（里程桩/起终点/箭头/KML 路径点）
+    base: 'windy',
+    baseOpacity: 1,
+    showLegend: false,
+    title: '',
+    markerMode: false,
+    pickMode: false,
+    seq: 0
+  };
+  var map = null, baseLayer = null, trackPane = null;
+
+  function uid(p) { state.seq += 1; return p + '_' + Date.now().toString(36) + '_' + state.seq; }
+
+  // ---------------------------------------------------------------- 工具
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function haversine(a, b) { // [lat,lng] -> 米
+    var R = 6371008.8, rad = Math.PI / 180;
+    var dLat = (b[0] - a[0]) * rad, dLng = (b[1] - a[1]) * rad;
+    var la1 = a[0] * rad, la2 = b[0] * rad;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+  // 逐点累积里程（米），返回与坐标等长的数组
+  function cumulative(latlngs) {
+    var acc = [0], total = 0;
+    for (var i = 1; i < latlngs.length; i++) {
+      total += haversine(latlngs[i - 1], latlngs[i]);
+      acc.push(total);
+    }
+    return acc;
+  }
+  // 按累积里程插值出等距点
+  function sampleByDistance(latlngs, cum, stepMeters) {
+    var out = [], total = cum[cum.length - 1] || 0, j = 0;
+    for (var d = stepMeters; d < total; d += stepMeters) {
+      while (j < cum.length - 2 && cum[j + 1] < d) j++;
+      var seg = cum[j + 1] - cum[j];
+      var t = seg > 0 ? (d - cum[j]) / seg : 0;
+      out.push({
+        dist: d,
+        latlng: [
+          latlngs[j][0] + (latlngs[j + 1][0] - latlngs[j][0]) * t,
+          latlngs[j][1] + (latlngs[j + 1][1] - latlngs[j][1]) * t
+        ]
+      });
+    }
+    return out;
+  }
+  function fmtDist(m) {
+    return m >= 1000 ? (m / 1000).toFixed(2) + ' km' : Math.round(m) + ' m';
+  }
+
+  // ---------------------------------------------------------------- 底图
+  function setBasemap(key, opacity) {
+    state.base = key;
+    if (opacity !== undefined) state.baseOpacity = opacity;
+    if (baseLayer) { map.removeLayer(baseLayer); baseLayer = null; }
+    if (key !== 'none' && BASEMAPS[key]) {
+      var b = BASEMAPS[key];
+      var opts = {};
+      for (var k in b.opts) if (Object.prototype.hasOwnProperty.call(b.opts, k)) opts[k] = b.opts[k];
+      opts.opacity = state.baseOpacity;
+      if (trackPane) opts.pane = 'tracks';
+      baseLayer = L.tileLayer(b.url, opts);
+      baseLayer.addTo(map);
+      baseLayer.bringToBack();
+    }
+  }
+  function setBasemapOpacity(v) {
+    state.baseOpacity = v;
+    if (baseLayer) baseLayer.setOpacity(v);
+  }
+
+  // ---------------------------------------------------------------- 地图初始化
+  function initMap() {
+    map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([30.0, 100.0], 5);
+
+    // 轨迹专属 pane：位于瓦片之上、标记之下，并叠一层深色描边保证任何底图上都清晰
+    map.createPane('tracks');
+    trackPane = map.getPane('tracks');
+    trackPane.style.zIndex = 350;
+
+    setBasemap(state.base, state.baseOpacity);
+
+    map.on('click', function (e) {
+      if (state.markerMode) { addMark(e.latlng.lat, e.latlng.lng, ''); setMarkerMode(false); }
+      else if (state.pickMode) { onPick(e.latlng); }
+    });
+
+    // 地名标签（KML 内嵌 LabelStyle 等）用专门的 pane，避免被轨迹压住
+    map.createPane('labels');
+    map.getPane('labels').style.zIndex = 450;
+    map.getPane('labels').style.pointerEvents = 'none';
+  }
+
+  // ================================================================
+  //  解析层：GPX / KML / KMZ
+  // ================================================================
+  function parseError(msg) { var e = new Error(msg); e.userFacing = true; return e; }
+
+  function xmlDoc(text) {
+    var doc = new DOMParser().parseFromString(text, 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length) throw parseError('XML 解析失败');
+    return doc;
+  }
+  // 忽略命名空间地按本地名取元素
+  function tags(root, name) {
+    var all = root.getElementsByTagName('*'), out = [];
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].localName === name) out.push(all[i]);
+    }
+    return out;
+  }
+  function kids(root, name) {
+    // 用 childNodes + nodeType 过滤：浏览器与 XML 解析器都稳定支持（children 在
+    // 部分 XML DOM 实现里不存在）
+    var out = [], ch = root.childNodes || [];
+    for (var i = 0; i < ch.length; i++) {
+      var n = ch[i];
+      if (n.nodeType === 1 && n.localName === name) out.push(n);
+    }
+    return out;
+  }
+  function childText(root, name) {
+    var k = kids(root, name);
+    return k.length ? (k[0].textContent || '').trim() : '';
+  }
+  function directText(root) { return (root.textContent || '').trim(); }
+
+  // ---- GPX ----
+  function parseGpx(text, fallbackName) {
+    var doc = xmlDoc(text), root = doc.documentElement;
+    if (!root || root.localName !== 'gpx') throw parseError('不是有效的 GPX 文件');
+    var name = childText(root, 'name') || fallbackName || '轨迹';
+
+    function collectPts(nodes) {
+      var out = [];
+      nodes.forEach(function (p) {
+        var la = parseFloat(p.getAttribute('lat')), lo = parseFloat(p.getAttribute('lon'));
+        if (isNaN(la) || isNaN(lo)) return;
+        var ele = childText(p, 'ele');
+        out.push({ lat: la, lng: lo, ele: ele === '' ? null : parseFloat(ele),
+                   time: childText(p, 'time') || null });
+      });
+      return out;
+    }
+
+    var tracks = [], i;
+    var trks = kids(root, 'trk');
+    for (i = 0; i < trks.length; i++) {
+      var segs = kids(trks[i], 'trkseg'), pts = [];
+      for (var s = 0; s < segs.length; s++) {
+        var sp = collectPts(kids(segs[s], 'trkpt'));
+        if (sp.length) pts = pts.concat(sp);
+      }
+      if (pts.length) {
+        tracks.push({ name: childText(trks[i], 'name') || name + (trks.length > 1 ? ' #' + (i + 1) : ''),
+                      points: pts, kind: 'track' });
+      }
+    }
+    var rtes = kids(root, 'rte');
+    for (i = 0; i < rtes.length; i++) {
+      var rp = collectPts(kids(rtes[i], 'rtept'));
+      if (rp.length) tracks.push({ name: childText(rtes[i], 'name') || name + ' 路线', points: rp, kind: 'route' });
+    }
+    if (!tracks.length) {
+      // 兜底：所有 trkpt/rtept
+      var any = collectPts(tags(root, 'trkpt').concat(tags(root, 'rtept')));
+      if (any.length) tracks.push({ name: name, points: any, kind: 'track' });
+    }
+    var waypoints = [];
+    var wpts = kids(root, 'wpt');
+    for (i = 0; i < wpts.length; i++) {
+      var la = parseFloat(wpts[i].getAttribute('lat')), lo = parseFloat(wpts[i].getAttribute('lon'));
+      if (isNaN(la) || isNaN(lo)) continue;
+      waypoints.push({ lat: la, lng: lo, name: childText(wpts[i], 'name') || '',
+                       desc: childText(wpts[i], 'desc') || childText(wpts[i], 'cmt') || '' });
+    }
+    if (!tracks.length && !waypoints.length) throw parseError('GPX 中未找到任何轨迹点或路径点');
+    return { name: name, tracks: tracks, waypoints: waypoints };
+  }
+
+  // ---- KML ----
+  function parseKml(text, fallbackName) {
+    var doc = xmlDoc(text), root = doc.documentElement;
+    if (!root || root.localName !== 'kml') throw parseError('不是有效的 KML 文件');
+
+    var styleColor = {};   // styleId -> #rrggbb
+    var styleWidth = {};   // styleId -> 线宽
+    var styles = tags(root, 'Style');
+    for (var i = 0; i < styles.length; i++) {
+      var id = styles[i].getAttribute('id');
+      if (!id) continue;
+      var ls = kids(styles[i], 'LineStyle')[0];
+      if (ls) {
+        var c = childText(ls, 'color'), w = childText(ls, 'width');
+        var hex = kmlColorToHex(c);
+        if (hex) styleColor[id] = hex;
+        if (w) styleWidth[id] = parseFloat(w);
+      }
+    }
+    function resolveStyle(node) {
+      var s = kids(node, 'styleUrl')[0];
+      if (!s) return null;
+      var url = directText(s).replace(/^#/, '');
+      if (styleColor[url] || styleWidth[url]) {
+        return { color: styleColor[url] || null, weight: styleWidth[url] || null };
+      }
+      return null;
+    }
+
+    function coordsOf(node) {
+      var cs = kids(node, 'coordinates')[0];
+      if (!cs) return [];
+      var raw = directText(cs).split(/\s+/), out = [];
+      for (var j = 0; j < raw.length; j++) {
+        if (!raw[j]) continue;
+        var p = raw[j].split(',');
+        if (p.length < 2) continue;
+        var lo = parseFloat(p[0]), la = parseFloat(p[1]), el = p.length > 2 ? parseFloat(p[2]) : NaN;
+        if (isNaN(la) || isNaN(lo)) continue;
+        out.push({ lat: la, lng: lo, ele: isNaN(el) ? null : el, time: null });
+      }
+      return out;
+    }
+
+    var tracks = [], waypoints = [], gxTracks = [], allEls = root.getElementsByTagName('*');
+
+    for (i = 0; i < allEls.length; i++) {
+      var el = allEls[i];
+      if (el.localName === 'LineString') {
+        var pts = coordsOf(el);
+        if (pts.length < 2) continue;
+        var pm = el.parentNode;
+        var nm = (pm && pm.localName === 'Placemark') ? childText(pm, 'name') : '';
+        var st = (pm && pm.localName === 'Placemark') ? resolveStyle(pm) : null;
+        tracks.push({ name: nm || fallbackName || '轨迹', points: pts, kind: 'kml',
+                      color: st && st.color, weight: st && st.weight });
+      } else if (el.localName === 'gx:Track' || el.localName === 'Track') {
+        // gx:Track：<when> 与 <gx:coord> 平行数组
+        var wh = kids(el, 'when'), cd = kids(el, 'coord'), gp = [];
+        for (var k = 0; k < cd.length; k++) {
+          var seg = directText(cd[k]).split(/\s+/);
+          if (seg.length < 2) continue;
+          var lo2 = parseFloat(seg[0]), la2 = parseFloat(seg[1]), el2 = parseFloat(seg[2]);
+          if (isNaN(la2) || isNaN(lo2)) continue;
+          gp.push({ lat: la2, lng: lo2, ele: isNaN(el2) ? null : el2,
+                    time: wh[k] ? directText(wh[k]) : null });
+        }
+        if (gp.length >= 2) {
+          var gm = el.parentNode;
+          var gnm = (gm && gm.localName === 'Placemark') ? childText(gm, 'name') : '';
+          gxTracks.push({ name: gnm || (fallbackName || '轨迹') + ' (GPS)', points: gp, kind: 'kml',
+                          color: (gm ? (resolveStyle(gm) || {}).color : null) || null, weight: null });
+        }
+      }
+    }
+
+    var pms = tags(root, 'Placemark');
+    for (i = 0; i < pms.length; i++) {
+      var hasLine = kids(pms[i], 'LineString').length || kids(pms[i], 'Track').length;
+      if (hasLine) continue;
+      var pt = kids(pms[i], 'Point')[0];
+      if (!pt) continue;
+      var cp = coordsOf(pt);
+      if (!cp.length) continue;
+      waypoints.push({ lat: cp[0].lat, lng: cp[0].lng, name: childText(pms[i], 'name') || '',
+                       desc: childText(pms[i], 'description') || '' });
+    }
+
+    return { name: fallbackName || 'KML', tracks: tracks.concat(gxTracks), waypoints: waypoints };
+  }
+
+  // KML 颜色是 aabbggrr -> #rrggbb
+  function kmlColorToHex(c) {
+    if (!c) return null;
+    c = c.trim();
+    if (/^[0-9a-fA-F]{8}$/.test(c)) return '#' + c.substring(6, 8) + c.substring(4, 6) + c.substring(2, 4);
+    if (/^[0-9a-fA-F]{6}$/.test(c)) return '#' + c;
+    return null;
+  }
+
+  // ---- KMZ：ZIP 容器，用浏览器原生 DecompressionStream 解 raw deflate ----
+  function u16(dv, o) { return dv.getUint16(o, true); }
+  function u32(dv, o) { return dv.getUint32(o, true); }
+
+  async function unzip(buf) {
+    var dv = new DataView(buf), n = buf.byteLength;
+    // 从尾部找 EOCD（0x06054b50）
+    var eocd = -1;
+    for (var i = n - 22; i >= Math.max(0, n - 66000); i--) {
+      if (u32(dv, i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw parseError('KMZ 文件损坏（找不到 ZIP 目录）');
+    var count = u16(dv, eocd + 10), cdo = u32(dv, eocd + 16);
+    var out = [], p = cdo;
+    for (var e = 0; e < count; e++) {
+      if (u32(dv, p) !== 0x02014b50) break;
+      var method = u16(dv, p + 10);
+      var csize = u32(dv, p + 20), usize = u32(dv, p + 24);
+      var nlen = u16(dv, p + 28), elen = u16(dv, p + 30), clen = u16(dv, p + 32);
+      var lho = u32(dv, p + 42);
+      var name = new TextDecoder('utf-8').decode(new Uint8Array(buf, p + 46, nlen));
+      var lnlen = u16(dv, lho + 26), lelen = u16(dv, lho + 28);
+      var dataStart = lho + 30 + lnlen + lelen;
+      if (!/\/$/.test(name)) {   // 跳过目录项
+        out.push({ name: name, method: method, usize: usize,
+                   raw: buf.slice(dataStart, dataStart + csize) });
+      }
+      p += 46 + nlen + elen + clen;
+    }
+    // 逐项解压（stored 或 deflate）
+    var files = [];
+    for (var f = 0; f < out.length; f++) {
+      var it = out[f], bytes;
+      if (it.method === 0) {
+        bytes = new Uint8Array(it.raw);
+      } else if (it.method === 8) {
+        bytes = await inflateRaw(it.raw);
+      } else {
+        continue; // 不支持的压缩方式，跳过
+      }
+      files.push({ name: it.name, bytes: bytes });
+    }
+    return files;
+  }
+
+  async function inflateRaw(buf) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw parseError('当前浏览器不支持 KMZ 解压（需 Chrome 80+/Edge 80+/Safari 16.4+），请改用 GPX 或 KML');
+    }
+    var ds = new DecompressionStream('deflate-raw');
+    var stream = new Blob([buf]).stream().pipeThrough(ds);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function parseKmz(buf, fallbackName) {
+    var files = await unzip(buf);
+    // 优先 doc.kml，否则第一个 .kml
+    var main = null, i;
+    for (i = 0; i < files.length; i++) {
+      if (/(^|\/)doc\.kml$/i.test(files[i].name)) { main = files[i]; break; }
+    }
+    if (!main) {
+      for (i = 0; i < files.length; i++) {
+        if (/\.kml$/i.test(files[i].name)) { main = files[i]; break; }
+      }
+    }
+    if (!main) throw parseError('KMZ 中没有找到 .kml 文件');
+    var text = new TextDecoder('utf-8').decode(main.bytes);
+    return parseKml(text, fallbackName);
+  }
+
+  // ================================================================
+  //  图层层：轨迹渲染
+  // ================================================================
+  function trackLatLngs(t) { return t.points.map(function (p) { return [p.lat, p.lng]; }); }
+
+  function renderTrack(t) {
+    if (t.layer) { map.removeLayer(t.layer); t.layer = null; }
+    if (!t.visible || !t.points.length) { renderLabels(); return; }
+    var latlngs = trackLatLngs(t);
+    var group = L.layerGroup();
+    if (latlngs.length >= 2) {
+      // 白色描边垫底，保证在深色/浅色底图上都看得清
+      L.polyline(latlngs, { color: '#ffffff', weight: t.weight + 3, opacity: .55,
+                            pane: 'tracks', interactive: false }).addTo(group);
+      L.polyline(latlngs, { color: t.color, weight: t.weight, opacity: 1,
+                            pane: 'tracks', interactive: false }).addTo(group);
+    }
+    group.addTo(map);
+    t.layer = group;
+    renderLabels();
+  }
+
+  // 轨迹名称标签：放在轨迹中点
+  function renderLabels() {
+    state.tracks.forEach(function (t) {
+      if (t.label) { map.removeLayer(t.label); t.label = null; }
+      if (!t.visible || !t.showLabel || !t.points.length) return;
+      var mid = t.points[Math.floor(t.points.length / 2)];
+      t.label = L.marker([mid.lat, mid.lng], {
+        interactive: false,
+        icon: L.divIcon({ className: '', html: '<div class="lbl" style="color:' +
+          esc(t.color) + '">' + esc(t.name) + '</div>', iconSize: [0, 0] })
+      }).addTo(map);
+    });
+  }
+
+  // ---------------------------------------------------------------- 标记
+  function markIcon(m, idx) {
+    var inner = '';
+    var glyph = '';
+    if (m.kind === 'start') glyph = 'S';
+    else if (m.kind === 'end') glyph = 'E';
+    else if (m.kind === 'km') glyph = '';
+    else if (m.seq) glyph = String(idx);
+    inner = '<span>' + esc(glyph) + '</span>';
+    var cls = (m.kind === 'waypoint' || m.kind === 'poi' || m.kind === 'km') ? 'pin wpt' : 'pin';
+    var size = m.kind === 'km' ? 16 : 22;
+    var html = '<div class="' + cls + '" style="background:' + esc(m.color) +
+      ';width:' + size + 'px;height:' + size + 'px"></div>';
+    return L.divIcon({ className: '', html: html, iconSize: [size, size],
+                       iconAnchor: [size / 2, size] });
+  }
+
+  function renderMarks() {
+    state.marks.forEach(function (m, i) {
+      if (m.layer) { map.removeLayer(m.layer); m.layer = null; }
+      var mk = L.marker([m.lat, m.lng], {
+        draggable: true, icon: markIcon(m, i), zIndexOffset: m.kind === 'km' ? 0 : 500
+      }).addTo(map);
+      var title = m.name || '(未命名)';
+      if (m.desc) title += '\n' + m.desc;
+      mk.bindTooltip(esc(title).replace(/\n/g, '<br>'), { direction: 'top', offset: [0, -18] });
+      mk.on('dragend', function () {
+        var ll = mk.getLatLng(); m.lat = ll.lat; m.lng = ll.lng; save(); renderLegend();
+      });
+      if (m.kind !== 'km' && m.kind !== 'start' && m.kind !== 'end') {
+        mk.on('click', function () { focusMark(m); });
+      }
+      m.layer = mk;
+    });
+    renderLegend();
+  }
+
+  // ---------------------------------------------------------------- 工具层
+  function clearToolLayers() {
+    state.toolLayers.forEach(function (l) { if (l && map.hasLayer(l)) map.removeLayer(l); });
+    state.toolLayers = [];
+    // 工具产生的标注型标记（起终点 / 里程桩 / KML 路径点）也从 marks 移除
+    state.marks = state.marks.filter(function (m) { return !m.auto; });
+    renderMarks(); renderMarkList();
+  }
+  function addTool(layer) { state.toolLayers.push(layer); }
+
+  function buildKmMarkers() {
+    clearToolLayers();
+    var step = parseFloat(document.getElementById('kmSel').value) * 1000;
+    var any = false;
+    state.tracks.forEach(function (t) {
+      if (!t.visible || t.points.length < 2) return;
+      any = true;
+      var latlngs = trackLatLngs(t), cum = cumulative(latlngs);
+      sampleByDistance(latlngs, cum, step).forEach(function (s) {
+        state.marks.push({ id: uid('mk'), kind: 'km', name: (s.dist / 1000).toFixed(0) + ' km',
+                           desc: t.name, lat: s.latlng[0], lng: s.latlng[1],
+                           color: t.color, auto: true, seq: false, trackId: t.id });
+      });
+    });
+    if (!any) { alert('没有可用的轨迹（请先导入并显示轨迹）'); return; }
+    renderMarks(); renderMarkList();
+  }
+
+  function buildEndpoints() {
+    clearToolLayers();
+    var any = false;
+    state.tracks.forEach(function (t) {
+      if (!t.visible || t.points.length < 2) return;
+      any = true;
+      var a = t.points[0], b = t.points[t.points.length - 1];
+      state.marks.push({ id: uid('mk'), kind: 'start', name: t.name + ' 起点', desc: '',
+                         lat: a.lat, lng: a.lng, color: '#3ecf8e', auto: true, seq: false });
+      state.marks.push({ id: uid('mk'), kind: 'end', name: t.name + ' 终点', desc: '',
+                         lat: b.lat, lng: b.lng, color: '#ff6b6b', auto: true, seq: false });
+    });
+    if (!any) { alert('没有可用的轨迹'); return; }
+    renderMarks(); renderMarkList();
+  }
+
+  // 每隔固定距离画一个箭头表示行进方向
+  function buildArrows() {
+    clearToolLayers();
+    var any = false;
+    state.tracks.forEach(function (t) {
+      if (!t.visible || t.points.length < 3) return;
+      any = true;
+      var latlngs = trackLatLngs(t), cum = cumulative(latlngs);
+      var total = cum[cum.length - 1];
+      var step = Math.max(2000, total / 8);   // 每条轨迹约 8 个箭头
+      sampleByDistance(latlngs, cum, step).forEach(function (s) {
+        // 取插值点前后一小段算朝向
+        var i = 1;
+        while (i < latlngs.length - 1 && cum[i] < s.dist) i++;
+        var p0 = latlngs[Math.max(0, i - 1)], p1 = latlngs[Math.min(latlngs.length - 1, i + 1)];
+        var ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]) * 180 / Math.PI;
+        var el = L.marker(s.latlng, {
+          interactive: false,
+          icon: L.divIcon({ className: '', iconSize: [16, 16], iconAnchor: [8, 8],
+            html: '<div style="transform:rotate(' + (-ang) + 'deg);font-size:13px;line-height:16px;' +
+                  'text-align:center;color:' + esc(t.color) + ';text-shadow:0 0 3px #000,0 0 3px #000">➤</div>' })
+        });
+        el.addTo(map); addTool(el);
+      });
+    });
+    if (!any) alert('没有可用的轨迹');
+  }
+
+  function buildWaypoints() {
+    clearToolLayers();
+    var any = false;
+    state.tracks.forEach(function (t) {
+      (t.waypoints || []).forEach(function (w) {
+        any = true;
+        state.marks.push({ id: uid('mk'), kind: 'waypoint', name: w.name || '路径点', desc: w.desc || '',
+                           lat: w.lat, lng: w.lng, color: '#ffb454', auto: true, seq: false });
+      });
+    });
+    if (!any) { alert('已导入的文件里没有路径点（KML Placemark / GPX wpt）'); return; }
+    renderMarks(); renderMarkList();
+  }
+
+  // ---------------------------------------------------------------- 图例
+  function renderLegend() {
+    var el = document.getElementById('legend');
+    if (!state.showLegend) { el.style.display = 'none'; return; }
+    var html = '';
+    if (state.title) html += '<div class="sum">' + esc(state.title) + '</div>';
+    var shown = state.tracks.filter(function (t) { return t.visible; });
+    shown.forEach(function (t) {
+      var extra = [];
+      if (t.distance > 0) extra.push(fmtDist(t.distance));
+      if (t.ascent > 0) extra.push('↑' + Math.round(t.ascent) + 'm');
+      html += '<div class="li"><span class="sw-line" style="background:' + esc(t.color) + '"></span>' +
+        esc(t.name) + (extra.length ? ' <span style="color:#8aa0b4">· ' + extra.join(' · ') + '</span>' : '') + '</div>';
+    });
+    if (state.marks.length) {
+      html += '<div class="sum" style="margin-top:6px">标记 ' + state.marks.length + ' 个</div>';
+      state.marks.slice(0, 14).forEach(function (m) {
+        html += '<div class="li"><span class="sw-dot" style="background:' + esc(m.color) + '"></span>' +
+          esc(m.name || '(未命名)') + '</div>';
+      });
+      if (state.marks.length > 14) html += '<div class="li" style="color:#8aa0b4">…还有 ' + (state.marks.length - 14) + ' 个</div>';
+    }
+    el.innerHTML = html || '<div style="color:#8aa0b4">暂无内容</div>';
+    el.style.display = 'block';
+  }
+  function toggleLegend() {
+    state.showLegend = !state.showLegend;
+    document.getElementById('mtLegend').classList.toggle('on', state.showLegend);
+    document.getElementById('btnLegend').classList.toggle('secondary', !state.showLegend);
+    renderLegend(); save();
+  }
+
+  // ================================================================
+  //  UI 渲染：轨迹列表 / 标记列表
+  // ================================================================
+  function renderTrackList() {
+    var box = document.getElementById('trackList');
+    document.getElementById('trackCount').textContent = state.tracks.length + ' 条';
+    if (!state.tracks.length) { box.innerHTML = '<div class="empty">还没有轨迹，先导入文件</div>'; return; }
+    box.innerHTML = '';
+    state.tracks.forEach(function (t) {
+      var d = document.createElement('div');
+      d.className = 'track';
+      var sw = PALETTE.map(function (c) {
+        return '<span class="sw" data-color="' + c + '" style="background:' + c + '" title="' + c + '"></span>';
+      }).join('');
+      d.innerHTML =
+        '<div class="track-head">' +
+          '<input type="checkbox" data-act="visible"' + (t.visible ? ' checked' : '') + ' title="显示与否">' +
+          '<input type="color" data-act="color" value="' + esc(t.color) + '" title="轨迹颜色">' +
+          '<input type="text" class="track-name" data-act="name" value="' + esc(t.name) + '" maxlength="60">' +
+          '<button class="tiny secondary" data-act="del" title="删除">✕</button>' +
+        '</div>' +
+        '<div class="track-meta">' + t.points.length + ' 点' +
+          (t.distance > 0 ? ' · ' + fmtDist(t.distance) : '') +
+          (t.ascent > 0 ? ' · 爬升 ' + Math.round(t.ascent) + ' m' : '') +
+          (t.eleMin !== null && t.eleMax !== null ? ' · ' + Math.round(t.eleMin) + '~' + Math.round(t.eleMax) + ' m' : '') +
+        '</div>' +
+        '<div class="track-tools">' +
+          '<label><input type="checkbox" data-act="label"' + (t.showLabel ? ' checked' : '') + '>名称</label>' +
+          '<label><input type="checkbox" data-act="wpt"' + (t.showWpt ? ' checked' : '') + '>路径点</label>' +
+          '<label title="线宽"><input type="number" data-act="weight" value="' + t.weight + '" min="1" max="12" step="1" style="width:46px;padding:2px 4px;font-size:11px"></label>' +
+          '<button class="tiny secondary" data-act="fit">定位</button>' +
+        '</div>' +
+        '<div class="track-tools"><div class="swatches">' + sw + '</div></div>';
+      box.appendChild(d);
+    });
+  }
+
+  function renderMarkList() {
+    var box = document.getElementById('markList');
+    document.getElementById('markCount').textContent = state.marks.length + ' 个';
+    if (!state.marks.length) { box.innerHTML = '<div class="empty">点地图上的「＋ 添加标记」开始</div>'; return; }
+    box.innerHTML = '';
+    state.marks.forEach(function (m, i) {
+      var d = document.createElement('div');
+      d.className = 'mk';
+      d.innerHTML = '<span class="dot" style="background:' + esc(m.color) + '"></span>' +
+        '<span class="t" title="' + esc(m.desc || '') + '">' + esc(m.name || '(未命名)') + '</span>' +
+        '<button class="tiny secondary" data-act="fit">定位</button>' +
+        '<button class="tiny secondary" data-act="edit">改</button>' +
+        '<button class="tiny danger" data-act="del">✕</button>';
+      box.appendChild(d);
+    });
+  }
+
+  // ---------------------------------------------------------------- 标记编辑
+  function focusMark(m) {
+    map.setView([m.lat, m.lng], Math.max(map.getZoom(), 14));
+  }
+  function addMark(lat, lng, name) {
+    var m = { id: uid('mk'), kind: 'pin', name: name || '', desc: '', lat: lat, lng: lng,
+              color: MARK_COLORS[state.marks.length % MARK_COLORS.length], auto: false, seq: true };
+    state.marks.push(m);
+    afterMarkChange();
+    editMark(m, true);
+    return m;
+  }
+  function editMark(m, isNew) {
+    var name = prompt('标记名称：', m.name || '');
+    if (name === null) { if (isNew) { state.marks = state.marks.filter(function (x) { return x !== m; }); afterMarkChange(); } return; }
+    var desc = prompt('注释内容（会显示在图上和 tooltip 里，可留空）：', m.desc || '');
+    if (desc === null) desc = m.desc || '';
+    m.name = name.trim(); m.desc = desc.trim();
+    afterMarkChange();
+  }
+  function afterMarkChange() { renderMarks(); renderMarkList(); save(); }
+
+  function setMarkerMode(on) {
+    state.markerMode = on;
+    if (on) setPickMode(false);
+    document.getElementById('mtMark').classList.toggle('on', on);
+    document.getElementById('map').style.cursor = on ? 'crosshair' : '';
+  }
+  function setPickMode(on) {
+    state.pickMode = on;
+    if (on) setMarkerMode(false);
+    document.getElementById('mtPick').classList.toggle('on', on);
+    document.getElementById('map').style.cursor = on ? 'crosshair' : '';
+  }
+  function onPick(ll) {
+    setPickMode(false);
+    addMark(ll.lat, ll.lng, '');
+  }
+
+  // ================================================================
+  //  导入
+  // ================================================================
+  function statsOf(points) {
+    var latlngs = points.map(function (p) { return [p.lat, p.lng]; });
+    var cum = cumulative(latlngs), distance = cum[cum.length - 1] || 0;
+    var ascent = 0, eleMin = null, eleMax = null, hasEle = false;
+    for (var i = 0; i < points.length; i++) {
+      var e = points[i].ele;
+      if (e === null || e === undefined || isNaN(e)) continue;
+      hasEle = true;
+      if (eleMin === null || e < eleMin) eleMin = e;
+      if (eleMax === null || e > eleMax) eleMax = e;
+      if (i > 0 && points[i - 1].ele !== null && !isNaN(points[i - 1].ele)) {
+        var d = e - points[i - 1].ele;
+        if (d > 0) ascent += d;
+      }
+    }
+    return { distance: distance, ascent: ascent,
+             eleMin: hasEle ? eleMin : null, eleMax: hasEle ? eleMax : null };
+  }
+
+  function addParsed(parsed, filename) {
+    var added = 0;
+    (parsed.tracks || []).forEach(function (tr) {
+      var st = statsOf(tr.points);
+      state.tracks.push({
+        id: uid('tr'), name: tr.name || filename, points: tr.points, visible: true,
+        color: tr.color || PALETTE[state.tracks.length % PALETTE.length],
+        weight: tr.weight && tr.weight > 0 ? Math.min(12, Math.round(tr.weight)) : 4,
+        showLabel: true, showWpt: true, kind: tr.kind || 'track',
+        waypoints: [], layer: null, label: null,
+        distance: st.distance, ascent: st.ascent, eleMin: st.eleMin, eleMax: st.eleMax
+      });
+      added++;
+    });
+    // 路径点挂到对应（第一条）轨迹上，便于整体开关
+    if (parsed.waypoints && parsed.waypoints.length && state.tracks.length) {
+      state.tracks[state.tracks.length - added].waypoints = parsed.waypoints;
+      if (parsed.tracks.length > 1) state.tracks[state.tracks.length - 1].waypoints = parsed.waypoints;
+    }
+    return added;
+  }
+
+  async function handleFiles(files) {
+    var msgs = [], total = 0;
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i], base = f.name.replace(/\.[^.]+$/, '');
+      try {
+        var parsed;
+        if (/\.kmz$/i.test(f.name)) parsed = await parseKmz(await f.arrayBuffer(), base);
+        else if (/\.kml$/i.test(f.name)) parsed = parseKml(await f.text(), base);
+        else if (/\.(gpx|xml)$/i.test(f.name)) parsed = parseGpx(await f.text(), base);
+        else { msgs.push('✕ ' + f.name + '：不支持的文件类型'); continue; }
+        var n = addParsed(parsed, base);
+        total += n;
+        msgs.push('✓ ' + f.name + '：' + n + ' 条轨迹' +
+          (parsed.waypoints.length ? ' / ' + parsed.waypoints.length + ' 路径点' : ''));
+      } catch (err) {
+        msgs.push('✕ ' + f.name + '：' + (err && err.message ? err.message : err));
+      }
+    }
+    state.tracks.forEach(renderTrack);
+    renderTrackList();
+    if (total) fitAll();
+    save();
+    document.getElementById('saveHint').textContent = msgs.join('　');
+  }
+
+  function fitAll() {
+    var pts = [];
+    state.tracks.forEach(function (t) { if (t.visible) pts = pts.concat(trackLatLngs(t)); });
+    if (!pts.length) state.tracks.forEach(function (t) { pts = pts.concat(trackLatLngs(t)); });
+    state.marks.forEach(function (m) { pts.push([m.lat, m.lng]); });
+    if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [40, 40] });
+  }
+
+  // ================================================================
+  //  导出：PNG 截图 / GPX / JSON
+  // ================================================================
+  var HTML2CANVAS = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+
+  function cloneWithStyles(src, dst) {
+    var cs = getComputedStyle(src);
+    for (var i = 0; i < cs.length; i++) {
+      var p = cs[i];
+      try { dst.style.setProperty(p, cs.getPropertyValue(p), cs.getPropertyPriority(p)); } catch (e) {}
+    }
+    dst.style.margin = '0';
+    var sc = src.children, dc = dst.children;
+    for (var j = 0; j < sc.length; j++) cloneWithStyles(sc[j], dc[j]);
+  }
+
+  async function exportPng() {
+    var btn = document.getElementById('btnPng');
+    btn.disabled = true; btn.textContent = '⏳ 渲染中…';
+    try {
+      if (typeof html2canvas === 'undefined') await loadScript(HTML2CANVAS);
+      var scale = parseFloat(document.getElementById('pngScale').value) || 2;
+      var src = document.getElementById('map');
+      var rect = src.getBoundingClientRect();
+      var w = Math.max(320, Math.round(rect.width)), h = Math.max(240, Math.round(rect.height));
+
+      // 重建一份静态 DOM 快照：避免 html2canvas 处理 canvas 跨域瓦片时直接失败
+      var holder = document.createElement('div');
+      holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:' + w + 'px;height:' + h +
+        'px;overflow:hidden;background:#0d131a';
+      var clone = src.cloneNode(true);
+      clone.style.width = w + 'px'; clone.style.height = h + 'px';
+      clone.style.position = 'relative'; clone.style.inset = 'auto';
+      holder.appendChild(clone);
+      // 把原地图的浮层（标题/图例）也带上
+      var extra = document.getElementById('mapWrap');
+      ['mapTitleEl', 'legend'].forEach(function (id) {
+        var e = document.getElementById(id);
+        if (e && e.style.display !== 'none' && e.offsetParent !== null) {
+          var c = e.cloneNode(true);
+          holder.appendChild(c);
+        }
+      });
+      document.body.appendChild(holder);
+      cloneWithStyles(src, clone);
+
+      // 用已加载的瓦片像素重绘 <img>，避开 canvas 污染
+      var imgs = src.querySelectorAll('.leaflet-tile');
+      var cimgs = clone.querySelectorAll('.leaflet-tile');
+      for (var i = 0; i < imgs.length && i < cimgs.length; i++) {
+        if (imgs[i].complete && imgs[i].naturalWidth > 0) {
+          try { cimgs[i].setAttribute('src', tileToDataURL(imgs[i])); } catch (e) {}
+        }
+      }
+
+      var canvas = await html2canvas(holder, {
+        width: w, height: h, scale: scale, backgroundColor: '#0d131a',
+        useCORS: true, allowTaint: false, logging: false
+      });
+      document.body.removeChild(holder);
+
+      var name = (state.title || '轨迹图').replace(/[\\/:*?"<>|]/g, '_');
+      canvas.toBlob(function (blob) {
+        if (!blob) { alert('导出失败：画布为空'); return; }
+        triggerDownload(blob, name + '.png');
+      }, 'image/png');
+    } catch (err) {
+      alert('导出 PNG 失败：' + (err && err.message ? err.message : err) +
+            '\n\n提示：若底图瓦片被浏览器标记为跨域，可先把底图切到「无底图」或降低倍率再试。');
+    } finally {
+      btn.disabled = false; btn.textContent = '📸 导出 PNG';
+    }
+  }
+
+  // 把已渲染的 <img> 瓦片画进 canvas 再取 dataURL —— 同源读取，不触发跨域限制
+  function tileToDataURL(img) {
+    var c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  }
+
+  function loadScript(url) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = url; s.onload = res;
+      s.onerror = function () { rej(new Error('无法加载 ' + url + '（检查网络/代理）')); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function triggerDownload(blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+  }
+
+  // ---- 导出标记 GPX ----
+  function exportGpx() {
+    var title = state.title || '轨迹标注';
+    var out = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<gpx version="1.1" creator="gpx2mbtiles-player" xmlns="http://www.topografix.com/GPX/1/1">\n' +
+      '  <metadata><name>' + xmlEsc(title) + '</name>' +
+      '<time>' + new Date().toISOString() + '</time></metadata>\n';
+    // 轨迹本身也导出，便于回灌 Avenza / Guru Maps
+    state.tracks.forEach(function (t) {
+      if (!t.points.length) return;
+      out += '  <trk><name>' + xmlEsc(t.name) + '</name><trkseg>\n';
+      t.points.forEach(function (p) {
+        out += '    <trkpt lat="' + p.lat.toFixed(7) + '" lon="' + p.lng.toFixed(7) + '">' +
+          (p.ele !== null && p.ele !== undefined && !isNaN(p.ele) ? '<ele>' + p.ele + '</ele>' : '') +
+          (p.time ? '<time>' + xmlEsc(p.time) + '</time>' : '') + '</trkpt>\n';
+      });
+      out += '  </trkseg></trk>\n';
+    });
+    state.marks.forEach(function (m) {
+      out += '  <wpt lat="' + m.lat.toFixed(7) + '" lon="' + m.lng.toFixed(7) + '">' +
+        '<name>' + xmlEsc(m.name || '标记') + '</name>' +
+        (m.desc ? '<desc>' + xmlEsc(m.desc) + '</desc>' : '') + '</wpt>\n';
+    });
+    out += '</gpx>\n';
+    triggerDownload(new Blob([out], { type: 'application/gpx+xml' }), (state.title || '标注') + '.gpx');
+  }
+  function xmlEsc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  }
+
+  // ---- 方案 JSON ----
+  function exportJson() {
+    var data = {
+      version: 1, savedAt: new Date().toISOString(), title: state.title,
+      base: state.base, baseOpacity: state.baseOpacity, showLegend: state.showLegend,
+      tracks: state.tracks.map(function (t) {
+        return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
+                 showLabel: t.showLabel, kind: t.kind, points: t.points, waypoints: t.waypoints };
+      }),
+      marks: state.marks.filter(function (m) { return !m.auto; }).map(function (m) {
+        return { kind: m.kind, name: m.name, desc: m.desc, lat: m.lat, lng: m.lng,
+                 color: m.color, seq: m.seq };
+      })
+    };
+    triggerDownload(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+      (state.title || '轨迹方案') + '.json');
+  }
+
+  function importJson(text) {
+    var d = JSON.parse(text);
+    if (!d || !d.tracks) throw new Error('不是有效的方案文件');
+    state.tracks.forEach(function (t) { if (t.layer) map.removeLayer(t.layer); if (t.label) map.removeLayer(t.label); });
+    clearToolLayers();
+    state.tracks = (d.tracks || []).map(function (t) {
+      var st = statsOf(t.points || []);
+      return { id: uid('tr'), name: t.name || '轨迹', points: t.points || [], visible: t.visible !== false,
+               color: t.color || PALETTE[0], weight: t.weight || 4, showLabel: t.showLabel !== false,
+               showWpt: true, kind: t.kind || 'track', waypoints: t.waypoints || [],
+               layer: null, label: null, distance: st.distance, ascent: st.ascent,
+               eleMin: st.eleMin, eleMax: st.eleMax };
+    });
+    state.marks = (d.marks || []).map(function (m) {
+      return { id: uid('mk'), kind: m.kind || 'pin', name: m.name || '', desc: m.desc || '',
+               lat: m.lat, lng: m.lng, color: m.color || '#ff6b6b', auto: false, seq: !!m.seq };
+    });
+    state.title = d.title || '';
+    state.showLegend = !!d.showLegend;
+    state.baseOpacity = typeof d.baseOpacity === 'number' ? d.baseOpacity : 1;
+    document.getElementById('mapTitle').value = state.title;
+    document.getElementById('baseOp').value = Math.round(state.baseOpacity * 100);
+    document.getElementById('opVal').textContent = Math.round(state.baseOpacity * 100) + '%';
+    setBasemap(d.base && (d.base === 'none' || BASEMAPS[d.base]) ? d.base : 'windy');
+    syncTitle(); renderTrackList(); state.tracks.forEach(renderTrack);
+    renderMarks(); renderMarkList(); fitAll(); save();
+  }
+
+  // ================================================================
+  //  持久化
+  // ================================================================
+  var saveTimer = null;
+  function save() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try {
+        var data = { version: 1, title: state.title, base: state.base,
+          baseOpacity: state.baseOpacity, showLegend: state.showLegend,
+          tracks: state.tracks.map(function (t) {
+            return { name: t.name, color: t.color, weight: t.weight, visible: t.visible,
+                     showLabel: t.showLabel, kind: t.kind, points: t.points, waypoints: t.waypoints };
+          }),
+          marks: state.marks.filter(function (m) { return !m.auto; }).map(function (m) {
+            return { kind: m.kind, name: m.name, desc: m.desc, lat: m.lat, lng: m.lng,
+                     color: m.color, seq: m.seq };
+          }) };
+        localStorage.setItem(STORE_KEY, JSON.stringify(data));
+      } catch (e) {
+        document.getElementById('saveHint').textContent =
+          '⚠️ 本地缓存写入失败（数据量可能超出浏览器配额），建议用「导出方案 JSON」保存。';
+      }
+    }, 400);
+  }
+  function load() {
+    var raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return false;
+    try { importJson(raw); return true; } catch (e) { return false; }
+  }
+
+  // ================================================================
+  //  事件绑定
+  // ================================================================
+  function syncTitle() {
+    var el = document.getElementById('mapTitleEl');
+    el.textContent = state.title || '';
+    el.style.display = state.title ? 'block' : 'none';
+    document.getElementById('mtTitle').classList.toggle('on', !!state.title);
+  }
+
+  function bindUI() {
+    // --- Tab 切换 ---
+    var genFrame = document.getElementById('genFrame');
+    document.querySelectorAll('.tab').forEach(function (tab) {
+      tab.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var goPlayer = /player/.test(tab.getAttribute('href'));
+        document.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        document.getElementById('genPage').classList.toggle('active', !goPlayer);
+        document.getElementById('playerPage').classList.toggle('active', goPlayer);
+        if (goPlayer) {
+          // 从 iframe 切回来时地图尺寸变了，必须重算
+          setTimeout(function () { map.invalidateSize(); }, 60);
+        } else {
+          if (!genFrame.getAttribute('src')) genFrame.setAttribute('src', '/');
+        }
+        try { history.replaceState(null, '', goPlayer ? '/player.html' : '/'); } catch (e) {}
+      });
+    });
+    // 默认路由：/player.html -> 回放；/ -> 生成器
+    if (/gen/.test(location.hash)) {
+      document.querySelectorAll('.tab')[0].click();
+    }
+
+    // --- 导入 ---
+    var drop = document.getElementById('drop'), fi = document.getElementById('fileInput');
+    drop.addEventListener('click', function () { fi.click(); });
+    fi.addEventListener('change', function () { handleFiles(fi.files); fi.value = ''; });
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); });
+    });
+    drop.addEventListener('drop', function (e) {
+      if (e.dataTransfer && e.dataTransfer.files) handleFiles(e.dataTransfer.files);
+    });
+    // 整页也允许拖放
+    window.addEventListener('dragover', function (e) { e.preventDefault(); });
+    window.addEventListener('drop', function (e) {
+      if (e.target === drop || drop.contains(e.target)) return;
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+    });
+
+    // --- 底图 ---
+    document.getElementById('baseSel').addEventListener('change', function () {
+      setBasemap(this.value, state.baseOpacity); save();
+    });
+    document.getElementById('baseOp').addEventListener('input', function () {
+      var v = parseInt(this.value, 10) / 100;
+      document.getElementById('opVal').textContent = this.value + '%';
+      setBasemapOpacity(v); save();
+    });
+
+    // --- 轨迹列表（事件委托） ---
+    var tl = document.getElementById('trackList');
+    function trackOf(el) {
+      var node = el.closest('.track');
+      if (!node) return null;
+      var idx = Array.prototype.indexOf.call(tl.children, node);
+      return state.tracks[idx] || null;
+    }
+    tl.addEventListener('click', function (e) {
+      var t = trackOf(e.target);
+      if (!t) return;
+      var sw = e.target.closest('.sw');
+      if (sw) { t.color = sw.getAttribute('data-color'); renderTrack(t); renderTrackList(); save(); return; }
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      var act = btn.getAttribute('data-act');
+      if (act === 'del') {
+        if (!confirm('移除轨迹「' + t.name + '」？')) return;
+        if (t.layer) map.removeLayer(t.layer);
+        if (t.label) map.removeLayer(t.label);
+        state.tracks = state.tracks.filter(function (x) { return x !== t; });
+        renderTrackList(); renderLegend(); save();
+      } else if (act === 'fit') {
+        if (t.points.length) map.fitBounds(L.latLngBounds(trackLatLngs(t)), { padding: [40, 40] });
+      }
+    });
+    tl.addEventListener('input', function (e) {
+      var t = trackOf(e.target);
+      if (!t) return;
+      var act = e.target.getAttribute('data-act');
+      if (act === 'name') {
+        t.name = e.target.value; renderLabels(); renderLegend(); save();
+      } else if (act === 'weight') {
+        t.weight = Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 4));
+        renderTrack(t); save();
+      }
+    });
+    tl.addEventListener('change', function (e) {
+      var t = trackOf(e.target);
+      if (!t) return;
+      var act = e.target.getAttribute('data-act');
+      if (act === 'visible') { t.visible = e.target.checked; renderTrack(t); renderLegend(); save(); }
+      else if (act === 'label') { t.showLabel = e.target.checked; renderLabels(); save(); }
+      else if (act === 'wpt') { t.showWpt = e.target.checked; save(); }
+      else if (act === 'color') { t.color = e.target.value; renderTrack(t); renderTrackList(); save(); }
+    });
+
+    // --- 批量按钮 ---
+    document.getElementById('btnFit').addEventListener('click', fitAll);
+    document.getElementById('btnAllOn').addEventListener('click', function () {
+      var on = state.tracks.some(function (t) { return !t.visible; });
+      state.tracks.forEach(function (t) { t.visible = on; renderTrack(t); });
+      renderTrackList(); renderLegend(); save();
+    });
+    document.getElementById('btnAllLbl').addEventListener('click', function () {
+      var on = state.tracks.some(function (t) { return !t.showLabel; });
+      state.tracks.forEach(function (t) { t.showLabel = on; });
+      renderLabels(); renderTrackList(); save();
+    });
+
+    // --- 标记列表 ---
+    var ml = document.getElementById('markList');
+    ml.addEventListener('click', function (e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      var node = e.target.closest('.mk');
+      var idx = Array.prototype.indexOf.call(ml.children, node);
+      var m = state.marks[idx];
+      if (!m) return;
+      var act = btn.getAttribute('data-act');
+      if (act === 'fit') focusMark(m);
+      else if (act === 'edit') editMark(m, false);
+      else if (act === 'del') {
+        if (m.layer) map.removeLayer(m.layer);
+        state.marks = state.marks.filter(function (x) { return x !== m; });
+        afterMarkChange();
+      }
+    });
+
+    // --- 地图浮层按钮 ---
+    document.getElementById('mtMark').addEventListener('click', function () {
+      setMarkerMode(!state.markerMode);
+    });
+    document.getElementById('mtPick').addEventListener('click', function () {
+      setPickMode(!state.pickMode);
+    });
+    document.getElementById('mtLegend').addEventListener('click', toggleLegend);
+    document.getElementById('btnLegend').addEventListener('click', toggleLegend);
+    document.getElementById('mtTitle').addEventListener('click', function () {
+      document.getElementById('mapTitle').focus();
+    });
+
+    // --- 标题 ---
+    document.getElementById('mapTitle').addEventListener('input', function () {
+      state.title = this.value.trim(); syncTitle(); renderLegend(); save();
+    });
+    document.getElementById('btnTitle').addEventListener('click', function () {
+      var on = document.getElementById('mapTitleEl').style.display !== 'none';
+      state.title = on ? '' : (document.getElementById('mapTitle').value.trim() || '轨迹图');
+      document.getElementById('mapTitle').value = state.title;
+      syncTitle(); renderLegend(); save();
+    });
+
+    // --- 行前工具 ---
+    document.getElementById('btnKm').addEventListener('click', buildKmMarkers);
+    document.getElementById('btnEndpoint').addEventListener('click', buildEndpoints);
+    document.getElementById('btnArrow').addEventListener('click', buildArrows);
+    document.getElementById('btnWpt').addEventListener('click', buildWaypoints);
+    document.getElementById('btnClearTool').addEventListener('click', function () {
+      clearToolLayers(); save();
+    });
+
+    // --- 导出 ---
+    document.getElementById('btnPng').addEventListener('click', exportPng);
+    document.getElementById('btnExpGpx').addEventListener('click', exportGpx);
+    document.getElementById('btnExpJson').addEventListener('click', exportJson);
+    var ji = document.getElementById('jsonInput');
+    document.getElementById('btnImpJson').addEventListener('click', function () { ji.click(); });
+    ji.addEventListener('change', function () {
+      var f = ji.files[0]; if (!f) return;
+      f.text().then(function (t) {
+        try { importJson(t); document.getElementById('saveHint').textContent = '✓ 已导入方案：' + f.name; }
+        catch (e) { alert('导入失败：' + e.message); }
+      });
+      ji.value = '';
+    });
+    document.getElementById('btnReset').addEventListener('click', function () {
+      if (!confirm('清空全部轨迹、标记和本地缓存？此操作不可撤销。')) return;
+      localStorage.removeItem(STORE_KEY);
+      state.tracks.forEach(function (t) { if (t.layer) map.removeLayer(t.layer); if (t.label) map.removeLayer(t.label); });
+      clearToolLayers();
+      state.tracks = []; state.marks = []; state.title = '';
+      document.getElementById('mapTitle').value = '';
+      syncTitle(); renderTrackList(); renderMarkList(); renderLegend(); save();
+    });
+
+    // --- 快捷键 ---
+    document.addEventListener('keydown', function (e) {
+      var tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (e.key === 'f' || e.key === 'F') fitAll();
+      else if (e.key === 'l' || e.key === 'L') toggleLegend();
+      else if (e.key === 'm' || e.key === 'M') setMarkerMode(!state.markerMode);
+      else if (e.key === 'Escape') { setMarkerMode(false); setPickMode(false); }
+    });
+  }
+
+  // ================================================================
+  //  启动
+  // ================================================================
+  initMap();
+  bindUI();
+  if (load()) {
+    document.getElementById('saveHint').textContent = '已从本地缓存恢复上次的轨迹与标记。';
+  } else {
+    renderTrackList(); renderMarkList();
+  }
+  renderLegend();
+  document.getElementById('mtLegend').classList.toggle('on', state.showLegend);
+  syncTitle();
+})();
+</script>
+</body>
+</html>
