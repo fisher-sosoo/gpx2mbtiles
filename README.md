@@ -1,12 +1,73 @@
 # GPX 工具：离线地图生成 + 轨迹回放
 
-> 两个页面，一套服务：
-> - **📦 生成离线地图**（`/`）：手机上传 GPX → 云服务器下载瓦片 → 生成 .gpkg / .mbtiles 导入 Avenza / Guru Maps 离线导航。**行前准备用。**
-> - **🎬 轨迹回放与分析**（`/player.html`）：PC 端导入多条 GPX / KML / KMZ 叠加在地图上，配色、标注、做截图。**行程结束后做分析分享用，纯前端零服务器开销。**
+> 三个页面，一套服务（统一入口 `/` 门户）：
+> - **📦 生成离线地图**（`/gpx/`）：手机上传 GPX → 云服务器下载瓦片 → 生成 .gpkg / .mbtiles 导入 Avenza / Guru Maps 离线导航。**行前准备用。**
+> - **🎬 轨迹回放与分析**（`/gpx/player.html`）：PC 端导入多条 GPX / KML / KMZ 叠加在地图上，配色、标注、做截图。**行程结束后做分析分享用，纯前端零服务器开销。**
+> - **🧭 服务门户**（`/`）：各服务统一入口。
 >
 > ⚠️ 仅限个人自用：Windy-Outdoor 服务条款禁止批量爬取瓦片。请务必开启限流与请求间隔、部署在海外节点、不得对外提供服务。
 
 > 📦 **云部署指南**（阿里云 ECS · 代理 · 自愈 · 安全加固 · GitHub Actions 自动部署）：见 [docs/DEPLOY.md](docs/DEPLOY.md)
+
+---
+
+## 开发流程：OpenSpec 驱动
+
+**本项目强制使用 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 规范驱动开发。**
+所有改动必须先有规范、再有代码。
+
+```
+1. /openspec-propose "<需求>"   → 生成 proposal / design / specs delta / tasks
+2. 审阅确认方案
+3. /openspec-apply-change       → 按 tasks.md 实现
+4. /openspec-archive-change     → 归档并合并 delta 回主 specs
+```
+
+| 路径 | 内容 |
+|---|---|
+| [openspec/project.md](openspec/project.md) | 项目上下文、环境、技术栈、**踩坑记录** |
+| [openspec/specs/](openspec/specs/) | 当前已实现的能力（**行为的事实来源**） |
+| [openspec/changes/](openspec/changes/) | 进行中的提案 |
+| [openspec/changes/archive/](openspec/changes/archive/) | 已完成提案 |
+| [AGENTS.md](AGENTS.md) | 流程硬性约束与代码约定 |
+
+常用命令：
+
+```bash
+openspec list --specs          # 列出全部能力
+openspec list                  # 列出进行中的提案
+openspec validate --all        # 校验全部制品
+openspec view                  # 交互式面板
+```
+
+**已经开始遵循该流程**：`openspec/changes/archive/2026-10-12-retro-tile-proxy-cache`
+记录了瓦片代理与缓存的引入过程（含根因分析与实测结论）。
+
+---
+
+## 底图说明（重要）
+
+回放页默认使用 **OpenTopoMap**（地形图，浏览器可直连）。
+
+**Windy 必须经服务端代理。** 其响应头同时带
+`access-control-allow-credentials: true` 与 `access-control-allow-origin: *`，
+违反 CORS 规范，Chrome 会判 `ERR_BLOCKED_BY_ORB`，底图整片空白。
+代理端点 `/api/tile/windy/{z}/{x}/{y}` 同源返回并带磁盘缓存。
+
+**限速只作用于服务端与上游之间**，前端不做任何节流 ——
+浏览器请求的是本站，命中缓存时根本不回源。
+
+---
+
+## 缓存
+
+| 层 | 说明 |
+|---|---|
+| 浏览器 | `Cache-Control: immutable` + 内容哈希 ETag，同一瓦片零网络请求 |
+| 服务端磁盘 | 默认上限 8GB，按最久未用 LRU 淘汰，磁盘剩余低于 3GB 停止写入 |
+| 成品文件 | 与瓦片缓存分开存放；成品是交付物，过期才删 |
+
+查看用量：`GET /api/tilecache/stats`
 
 ---
 

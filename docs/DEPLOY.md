@@ -111,11 +111,90 @@ Caddy（非 Nginx）在 :80 上按路径分流：
 | `MAX_CONCURRENCY` / `REQUEST_INTERVAL_MS` | `8` / `100` | 限流 |
 | `MAX_RUNNING_TASKS` / `MAX_TILES_PER_TASK` | `2` / `60000` | 资源保护 |
 | `TASK_TIMEOUT_SECONDS` / `FILE_EXPIRY_SECONDS` | `3600` / `259200` | 超时与过期 |
+| `TILE_CACHE_ENABLED` | `1` | 瓦片代理缓存开关 |
+| `TILE_CACHE_MAX_BYTES` | `8589934592`（8GB） | 缓存上限，超限按最久未用淘汰 |
+| `TILE_CACHE_MAX_TILE_BYTES` | `5242880`（5MB） | 单张瓦片超过则不缓存 |
+| `TILE_PROXY_LAYERS` | `windy` | 允许经代理的图层白名单 |
+| `DISK_MIN_FREE_BYTES` | `3221225472`（3GB） | 剩余空间低于此值停止写缓存（仍可读） |
 
 其他：
 - `compose.yaml`：`127.0.0.1:8000:8000`（不对外）、`extra_hosts` host-gateway、`./data:/app/data`、`restart: unless-stopped`
 - `Dockerfile`：pip 使用腾讯云 PyPI 镜像（`mirrors.cloud.tencent.com`），非 root 用户 uid 10001
 - 瓦片图层：`app/config.py` 注册 `windy`（默认，max_zoom 18）与 `opentopomap`（OpenTopoMap 地形图，a/b/c 子域名轮询，max_zoom 17）
+
+## 6.1 瓦片代理与缓存
+
+### 为什么需要代理
+
+浏览器直连 Windy 会失败。其响应头同时带
+`access-control-allow-credentials: true` 与 `access-control-allow-origin: *`，
+按 CORS 规范这两者不能并存，Chrome 判为 `ERR_BLOCKED_BY_ORB`，底图整片空白。
+
+实测对照（同一会话、同一网络）：
+
+| 瓦片源 | 浏览器结果 |
+|---|---|
+| OpenTopoMap | OK |
+| OpenStreetMap | OK |
+| Windy | `ERR_BLOCKED_BY_ORB` |
+
+用 curl / PowerShell 请求同样的 URL 能拿到 200 + 有效 PNG，因为它不做 CORS 校验
+—— 这也是最初误判为「限流」的原因。
+
+### 端点
+
+| 端点 | 鉴权 | 说明 |
+|---|---|---|
+| `GET /api/tile/{layer}/{z}/{x}/{y}` | 无 | 瓦片代理，同源返回，带缓存 |
+| `GET /api/tilecache/stats` | 无 | 缓存用量 |
+| `POST /api/tilecache/evict` | 需要 | 手动触发 LRU 淘汰 |
+
+代理端点不加鉴权：地图库的 `<img>` 请求带不了自定义头，且只代理白名单图层、
+只读公开瓦片。非白名单图层返回 404，坐标越界返回 400。
+
+### 缓存分层
+
+| 层 | 机制 |
+|---|---|
+| 浏览器 | `Cache-Control: public, max-age=2592000, immutable` + 内容哈希 ETag |
+| 服务端磁盘 | `data/tilecache/<layer>/<z>/<x//1000>/<x>/<y>.tile` |
+
+ETag 用**内容哈希**而非 mtime：mtime 随回源时间变化，会导致同一瓦片 ETag 漂移、
+浏览器缓存无谓失效。
+
+### 淘汰与磁盘保护
+
+- 超 `TILE_CACHE_MAX_BYTES` 时按 mtime（即最后访问时间）从旧到新删到 85%
+- 每次读取会 `utime` 更新访问时间
+- 剩余空间低于 `DISK_MIN_FREE_BYTES` 时**停止写入**，但继续提供读取
+- 淘汰后清理空目录
+
+**瓦片缓存与任务成品分开存放**：前者是只读缓存（丢了自动回源，可随时淘汰），
+后者是交付物（过期才删）。
+
+### 限速的分层（重要）
+
+| 链路 | 是否限速 | 由谁控制 |
+|---|---|---|
+| 浏览器 → 服务器 | **否** | 浏览器自身并发 |
+| 服务器 → 上游 | **是** | 服务端 `TileFetcher`（并发 + 间隔 + 退避） |
+
+前端曾错误地对每个瓦片请求排队限速（900ms/张），导致命中磁盘缓存的请求
+也被白白拖慢 —— 命中缓存时服务端根本不回源，限速毫无意义。
+现已移除，前端只保留失败重试。
+
+### 排查命令
+
+```bash
+# 缓存用量
+curl -s http://127.0.0.1:8000/api/tilecache/stats
+
+# 取一张瓦片，看命中状态
+curl -sI http://127.0.0.1:8000/api/tile/windy/13/6350/3420 | grep -i x-tile-cache
+
+# 磁盘占用
+du -sh /opt/gpx2mbtiles/data/tilecache
+```
 
 ## 7. 重启自愈
 
