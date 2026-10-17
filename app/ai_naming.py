@@ -118,8 +118,15 @@ def _post(settings, prompt: str) -> dict:
         "Content-Type": "application/json",
     })
     timeout = getattr(settings, "ai_timeout_seconds", 30.0)
+    # 服务器在墙内，api.deepseek.com 必须走 mihomo 代理（与瓦片源共用 TILE_PROXY）
+    proxy = getattr(settings, "ai_proxy", "") or getattr(settings, "tile_proxy", "")
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
+    else:
+        opener = urllib.request.build_opener()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]

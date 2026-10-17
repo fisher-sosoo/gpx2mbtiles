@@ -120,6 +120,8 @@ class Settings:
         self.ai_model = os.getenv("AI_MODEL", "deepseek-chat").strip()
         self.ai_timeout_seconds = _env_float("AI_TIMEOUT_SECONDS", 30.0, 3.0, 180.0)
         self.ai_max_tokens = _env_int("AI_MAX_TOKENS", 2000, 200, 8192)
+        # 墙内服务器访问模型 API 必须走代理；为空时复用 TILE_PROXY
+        self.ai_proxy = os.getenv("AI_PROXY", "").strip()
         # 低于此剩余空间时停止写缓存（默认 3GB；8G 缓存 + 3G 余量，40G 盘安全）
         self.disk_min_free_bytes = _env_int(
             "DISK_MIN_FREE_BYTES", 3221225472, 104857600, 1099511627776)
