@@ -647,6 +647,18 @@
     return (0.5 - Math.log((1 + t) / (1 - t)) / (4 * Math.PI)) * s;
   }
 
+  function parseTrackPoints(text) {
+    var doc = new DOMParser().parseFromString(text, 'text/xml');
+    var nodes = doc.getElementsByTagName('trkpt');
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var la = parseFloat(nodes[i].getAttribute('lat'));
+      var lo = parseFloat(nodes[i].getAttribute('lon'));
+      if (!isNaN(la) && !isNaN(lo)) out.push([la, lo]);
+    }
+    return out;
+  }
+
   function trackLatLngs() { return state.trackPts || []; }
   function riskPoints() {
     var s = state.result && state.result.summary;

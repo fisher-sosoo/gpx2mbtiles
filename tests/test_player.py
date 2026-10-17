@@ -408,6 +408,27 @@ def test_convert_has_single_download_with_pois():
     assert "withToken" in js, "浏览器导航需要带 token"
 
 
+def test_convert_critical_helpers_are_defined():
+    """关键辅助函数必须真的定义在页面里。
+
+    回归防护：重构时把整段代码替换掉，函数被调用却没了定义，
+    表现为「ReferenceError: xxx is not defined」，静态 ID 检查抓不到。
+    """
+    js = _extract_inline_js(_read(CONVERT_PAGE))
+    required = [
+        "parseTrackPoints", "ensureTrackPoints", "trackLatLngs",
+        "renderRouteImage", "renderRouteIntoGuide", "drawPolyline",
+        "computeView", "projPt", "loadTile",
+        "renderMd", "render", "renderPois", "renderGuide",
+        "apiFetch", "withToken", "ensureKey", "showProjectPanels",
+        "loadHistory", "loadTrackForMap", "maybeRunEnrichments",
+        "startJunctionJob", "pollJunctions", "junctionHint",
+        "setChatEnabled", "appendChat", "sendChat",
+    ]
+    missing = [n for n in required if ("function %s(" % n) not in js]
+    assert not missing, "页面里缺少这些函数的定义：%s" % missing
+
+
 def test_convert_route_image_has_gpx_fallback():
     """出图不能只依赖接口：手上已有 gpx 时应直接解析。"""
     js = _extract_inline_js(_read(CONVERT_PAGE))
