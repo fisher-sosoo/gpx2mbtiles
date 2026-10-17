@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>KML → GPX 命名转换</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
 <style>
   :root { --bg:#0e141b; --card:#1a2430; --line:#2a3848; --accent:#4da3ff; --ok:#3ecf8e;
           --err:#ff6b6b; --warn:#ffb454; --muted:#8aa0b4; }
@@ -57,11 +57,8 @@
   .src.note { background:#3a2a1d; color:var(--warn); }
   .summary-line { font-size:12.5px; color:var(--muted); line-height:1.6; margin-bottom:8px; }
   .warn-line { color:var(--warn); font-size:12.5px; margin-top:8px; line-height:1.6; }
-  #cmap { height:360px; border-radius:12px; border:1px solid var(--line);
-          background:#0d131a; z-index:0; }
-  #cmap .leaflet-control-attribution { font-size:10px; }
-  .cmap-label { font-size:11.5px; font-weight:600; color:#fff;
-                text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000; white-space:nowrap; }
+  .route-img { width:100%; border-radius:10px; border:1px solid var(--line);
+               display:block; margin-bottom:12px; }
   .mdview { background:#0f1822; border:1px solid #2a3848; border-radius:10px;
             padding:12px 14px; font-size:13px; line-height:1.75; color:#c3d2df;
             max-height:560px; overflow:auto; }
@@ -126,6 +123,25 @@
       </span>
     </span>
   </label>
+  <label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;cursor:pointer">
+    <input type="checkbox" id="optJunction" style="margin-top:3px;flex-shrink:0">
+    <span>
+      <b style="color:#cfe1f2">结合岔路判断转向</b>
+      <span class="hint" style="display:block;margin-top:2px">
+        拉取沿线真实路网，把转向分成「岔路口转向」与「地形转向」，约多花 1 分钟。
+      </span>
+    </span>
+  </label>
+  <label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;cursor:pointer">
+    <input type="checkbox" id="optPoi" style="margin-top:3px;flex-shrink:0">
+    <span>
+      <b style="color:#cfe1f2">补充地名航点</b>
+      <span class="hint" style="display:block;margin-top:2px">
+        拉取沿线的垭口、牛场、山峰、湖泊与过河点，约多花 1 分钟。
+      </span>
+    </span>
+  </label>
+  <div class="hint" id="enrichHint" style="display:none;margin-top:10px"></div>
   <button id="convertBtn">🔄 转换为 GPX</button>
 </div>
 
@@ -138,28 +154,6 @@
   <div class="hint" id="useHint">下载后可导入仅支持 GPX 的 App（Avenza / Guru Maps / 两步路 等），也可直接回到离线地图页生成底图。</div>
 </div>
 
-<div class="card" id="mapCard" style="display:none">
-  <h2>路线地图 <span class="hint" id="mapStat" style="font-weight:400"></span></h2>
-  <div class="hint" style="margin-bottom:8px">
-    底图为 OpenTopoMap。橙色圈是该留意的转向点，蓝色点是补充的地名。
-  </div>
-  <div id="cmap"></div>
-  <label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:8px">
-    <input type="checkbox" id="mapShowTurns" checked style="width:auto"> 显示风险圈
-    <input type="checkbox" id="mapShowPois" checked style="width:auto;margin-left:10px"> 显示地名点
-    <input type="checkbox" id="mapShowJunctions" checked style="width:auto;margin-left:10px"> 显示岔路
-  </label>
-  <button class="secondary" id="junctionBtn" style="margin-top:8px">🔀 检测岔路（结合路网，约 30 秒）</button>
-  <div class="hint" id="junctionHint" style="display:none"></div>
-  <div class="row2" style="margin-top:8px">
-    <select id="mapScale" style="flex:1">
-      <option value="1">导出 1×</option>
-      <option value="2" selected>导出 2×</option>
-      <option value="3">导出 3×</option>
-    </select>
-    <button class="secondary" id="mapPng" style="width:50%;margin:0">📸 导出 PNG</button>
-  </div>
-</div>
 
 <div class="card" id="poiCard" style="display:none">
   <h2>地名补点 <span class="hint" id="poiStat" style="font-weight:400"></span></h2>
@@ -169,7 +163,7 @@
   </div>
   <div id="poiList"><div class="hint">还没有查询，点下面的按钮从 OpenStreetMap 拉取沿线地名</div></div>
   <div class="row2" style="margin-top:10px">
-    <button class="secondary" id="poiBtn" style="width:50%">🧭 补充地名航点</button>
+    <button class="secondary" id="poiBtn" style="display:none">🧭 补充地名航点</button>
     <button class="secondary" id="poiExportBtn" style="width:50%;display:none">⬇️ 下载含地名 GPX</button>
   </div>
 
@@ -248,7 +242,6 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function () {
   var API_KEY = localStorage.getItem('gpx2mbtiles_key') || '';
@@ -352,6 +345,7 @@
         render(res.j);
         showProjectPanels(true);
         loadTrackForMap();
+        maybeRunEnrichments();
         loadHistory();
       })
       .catch(function (e) {
@@ -365,9 +359,9 @@
   // 只有「结果」按数据有无显示。此前把按钮放在隐藏卡片里，导致功能完全点不到。
   function showProjectPanels(hasProject) {
     var disp = hasProject ? 'block' : 'none';
-    $('poiCard').style.display = disp;
     $('guideCard').style.display = disp;
-    $('mapCard').style.display = disp;
+    if (!hasProject) $('poiCard').style.display = 'none';
+
     if (!hasProject) return;
     $('poiExportBtn').style.display = 'none';
     $('guideOut').style.display = 'none';
@@ -384,9 +378,18 @@
       .then(function (text) {
         if (!text) return;
         state.trackPts = parseTrackPoints(text);
-        drawMap();
       })
       .catch(function () { /* 地图失败不阻断其它功能 */ });
+  }
+
+  // 顶部两个开关：转换完成后按勾选自动跑，不再需要单独按钮
+  function maybeRunEnrichments() {
+    if (!state.projectId) return;
+    if ($('optPoi').checked) {
+      var pb = $('poiBtn');
+      if (pb && !pb.disabled) pb.click();
+    }
+    if ($('optJunction').checked) startJunctionJob();
   }
 
   function render(res) {
@@ -517,11 +520,47 @@
     return out.join('');
   }
 
+  // 把线路图渲染成静态 PNG 插到分析文本里
+  function renderRouteIntoGuide() {
+    var wrap = $('routeImgWrap');
+    if (!wrap) return;
+    renderRouteImage(2).then(function (canvas) {
+      if (!trackLatLngs().length) {
+        wrap.textContent = '（没有轨迹数据，无法出图）';
+        return;
+      }
+      var url = canvas.toDataURL('image/png');
+      var img = document.createElement('img');
+      img.className = 'route-img';
+      img.src = url;
+      img.alt = '线路图';
+      var bar = document.createElement('div');
+      bar.style.cssText = 'margin:-6px 0 12px;display:flex;gap:10px;align-items:center';
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'route.png';
+      a.className = 'hint';
+      a.textContent = '⬇️ 下载这张图';
+      a.style.color = '#7cc0ff';
+      bar.appendChild(a);
+      wrap.textContent = '';
+      wrap.className = '';
+      wrap.appendChild(img);
+      wrap.appendChild(bar);
+    }).catch(function (e) {
+      wrap.textContent = '线路图生成失败：' + (e && e.message ? e.message : e);
+    });
+  }
+
   function renderGuide(g) {
     $('guideCard').style.display = 'block';
     $('guideOut').style.display = 'block';
     state.guideMd = g.markdown || '';
-    $('guideMd').innerHTML = renderMd(g.markdown || '(空)');
+    // 线路图直接嵌在分析文本最上方（静态图片，不是交互地图）
+    $('guideMd').innerHTML =
+      '<div id="routeImgWrap" class="hint" style="margin-bottom:10px">正在生成线路图…</div>'
+      + renderMd(g.markdown || '(空)');
+    renderRouteIntoGuide();
     var bits = [];
     if (g.range) bits.push(g.range);
     if (g.ai_narrative) bits.push('含 AI 分析');
@@ -579,43 +618,20 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   });
 
-  // ---------- 页面内地图 + 出图 ----------
-  // 不再跳转到回放页：本页出图，风险点直接圈在地图上。
-  var cmap = null, cLayers = { track: null, turns: null, pois: null, junctions: null };
+
+  // ---------- 线路图（纯 canvas，不在页面常驻） ----------
+  // 页面上不再嵌交互地图：只在生成分析时把路线渲染成静态图片，嵌进分析文本。
+  // 因此这里完全不依赖 Leaflet，按经纬度投影后逐层绘制即可。
   var OTM_TPL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png';
+  var IMG_W = 900, IMG_H = 520, IMG_PAD = 36;
 
-  function trackLatLngs() {
-    var s = state.result && state.result.summary;
-    if (!s) return [];
-    // 摘要里没有完整轨迹点，用接口取回的 GPX 解析一次
-    if (state.trackPts) return state.trackPts;
-    return [];
+  function lon2x(lon, s) { return (lon + 180) / 360 * s; }
+  function lat2y(lat, s) {
+    var t = Math.sin(lat * Math.PI / 180);
+    return (0.5 - Math.log((1 + t) / (1 - t)) / (4 * Math.PI)) * s;
   }
 
-  function parseTrackPoints(text) {
-    var doc = new DOMParser().parseFromString(text, 'text/xml');
-    var out = [];
-    var nodes = doc.getElementsByTagName('trkpt');
-    for (var i = 0; i < nodes.length; i++) {
-      var la = parseFloat(nodes[i].getAttribute('lat'));
-      var lo = parseFloat(nodes[i].getAttribute('lon'));
-      if (!isNaN(la) && !isNaN(lo)) out.push([la, lo]);
-    }
-    return out;
-  }
-
-  function ensureMap() {
-    if (cmap) return cmap;
-    $('cmap').style.display = 'block';
-    cmap = L.map('cmap', { zoomControl: true, attributionControl: true })
-      .setView([35, 105], 4);
-    L.tileLayer(OTM_TPL, {
-      maxZoom: 17,
-      attribution: '© OpenTopoMap (CC-BY-SA)'
-    }).addTo(cmap);
-    return cmap;
-  }
-
+  function trackLatLngs() { return state.trackPts || []; }
   function riskPoints() {
     var s = state.result && state.result.summary;
     if (!s) return [];
@@ -623,87 +639,36 @@
       return w.turn_text && w.turn_text !== '直行' && w.lat && w.lon;
     });
   }
-
   function poiPoints() {
     return (state.pois || []).filter(function (p) { return p.lat && p.lon; });
   }
-
   function junctionPoints() {
     return (state.junctions || []).filter(function (j) { return j.lat && j.lon; });
   }
 
-  function drawMap() {
-    var pts = trackLatLngs();
-    if (!pts.length) return;
-    ensureMap();
-    $('mapCard').style.display = 'block';
-
-    if (cLayers.track) cmap.removeLayer(cLayers.track);
-    if (cLayers.turns) cmap.removeLayer(cLayers.turns);
-    if (cLayers.pois) cmap.removeLayer(cLayers.pois);
-
-    cLayers.track = L.polyline(pts, { color: '#ff5b5b', weight: 4, opacity: 0.95 }).addTo(cmap);
-
-    var tg = L.layerGroup();
-    riskPoints().forEach(function (w) {
-      var deg = Math.abs(w.turn || 60);
-      var r = deg >= 120 ? 16 : 11;
-      L.circleMarker([w.lat, w.lon], {
-        radius: r, color: '#ffb454', weight: 2.5, fillColor: '#ffb454',
-        fillOpacity: 0.18
-      }).bindTooltip(w.name, { permanent: false }).addTo(tg);
+  function computeView(pts, w, h) {
+    var minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+    pts.forEach(function (p) {
+      if (p[0] < minLat) minLat = p[0];
+      if (p[0] > maxLat) maxLat = p[0];
+      if (p[1] < minLon) minLon = p[1];
+      if (p[1] > maxLon) maxLon = p[1];
     });
-    cLayers.turns = tg.addTo(cmap);
-
-    var pg = L.layerGroup();
-    poiPoints().forEach(function (p) {
-      L.circleMarker([p.lat, p.lon], {
-        radius: 5, color: '#4da3ff', weight: 2, fillColor: '#4da3ff', fillOpacity: 0.9
-      }).bindTooltip(p.name + (p.type_label ? '（' + p.type_label + '）' : ''),
-        { permanent: false }).addTo(pg);
-    });
-    cLayers.pois = pg.addTo(cmap);
-
-    // 岔路口用紫色方框，和橙色的转向圈区分开
-    var jg = L.layerGroup();
-    junctionPoints().forEach(function (j) {
-      L.circleMarker([j.lat, j.lon], {
-        radius: 9, color: '#c07bff', weight: 2, fillColor: '#c07bff', fillOpacity: 0.15
-      }).bindTooltip('岔路口（' + (j.way_count || 2) + ' 条路交汇）',
-        { permanent: false }).addTo(jg);
-    });
-    cLayers.junctions = jg.addTo(cmap);
-
-    applyMapToggles();
-    cmap.fitBounds(L.latLngBounds(pts), { padding: [24, 24] });
-    var rt = riskPoints().length, pt = poiPoints().length, jt = junctionPoints().length;
-    $('mapStat').textContent = '（轨迹 ' + pts.length + ' 点 · 转向 ' + rt +
-      ' · 岔路 ' + jt + ' · 地名 ' + pt + '）';
-    setTimeout(function () { cmap.invalidateSize(); }, 60);
+    var ww = Math.max(1e-6, lon2x(maxLon, 256) - lon2x(minLon, 256));
+    var wh = Math.max(1e-6, lat2y(minLat, 256) - lat2y(maxLat, 256));
+    var z = Math.floor(Math.log(Math.min((w - IMG_PAD * 2) / ww,
+                                         (h - IMG_PAD * 2) / wh)) / Math.LN2);
+    z = Math.max(4, Math.min(17, z));
+    var scale = 256 * Math.pow(2, z);
+    var cx = (lon2x(minLon, scale) + lon2x(maxLon, scale)) / 2;
+    var cy = (lat2y(minLat, scale) + lat2y(maxLat, scale)) / 2;
+    return { zoom: z, scale: scale,
+             origin: { x: cx - w / 2, y: cy - h / 2 } };
   }
 
-  function applyMapToggles() {
-    if (!cmap) return;
-    if ($('mapShowTurns').checked) { if (!cmap.hasLayer(cLayers.turns)) cLayers.turns.addTo(cmap); }
-    else cmap.removeLayer(cLayers.turns);
-    if ($('mapShowPois').checked) { if (!cmap.hasLayer(cLayers.pois)) cLayers.pois.addTo(cmap); }
-    else cmap.removeLayer(cLayers.pois);
-    if (!cLayers.junctions) return;
-    if ($('mapShowJunctions').checked) {
-      if (!cmap.hasLayer(cLayers.junctions)) cLayers.junctions.addTo(cmap);
-    } else cmap.removeLayer(cLayers.junctions);
-  }
-
-  $('mapShowTurns').addEventListener('change', applyMapToggles);
-  $('mapShowJunctions').addEventListener('change', applyMapToggles);
-  $('mapShowPois').addEventListener('change', applyMapToggles);
-
-  function projectPt(lat, lng, zoom, origin) {
-    var scale = 256 * Math.pow(2, zoom);
-    var x = (lng + 180) / 360 * scale;
-    var s = Math.sin(lat * Math.PI / 180);
-    var y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * scale;
-    return [x - origin.x, y - origin.y];
+  function projPt(lat, lon, view) {
+    return [lon2x(lon, view.scale) - view.origin.x,
+            lat2y(lat, view.scale) - view.origin.y];
   }
 
   function loadTile(url) {
@@ -716,46 +681,173 @@
     });
   }
 
-  // ---------- 岔路检测 ----------
+  function drawPolyline(ctx, pts, width, color, alpha) {
+    if (pts.length < 2) return;
+    ctx.beginPath();
+    pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+    ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // 渲染成一张图：底图瓦片 -> 轨迹 -> 岔路 -> 地名 -> 转向圈 -> 标题
+  async function renderRouteImage(mult) {
+    mult = mult || 2;
+    var w = IMG_W, h = IMG_H;
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.round(w * mult);
+    canvas.height = Math.round(h * mult);
+    var ctx = canvas.getContext('2d');
+    ctx.scale(mult, mult);
+    ctx.fillStyle = '#0d131a';
+    ctx.fillRect(0, 0, w, h);
+
+    var pts = trackLatLngs();
+    if (!pts.length) return canvas;
+    var view = computeView(pts, w, h);
+    var zoom = view.zoom, origin = view.origin;
+
+    // 1) 底图瓦片（缺失就留底色，不整体失败）
+    var minX = Math.floor(origin.x / 256), maxX = Math.floor((origin.x + w) / 256);
+    var minY = Math.floor(origin.y / 256), maxY = Math.floor((origin.y + h) / 256);
+    var n = Math.pow(2, zoom), jobs = [];
+    for (var tx = minX; tx <= maxX; tx++) {
+      for (var ty = minY; ty <= maxY; ty++) {
+        if (ty < 0 || ty >= n) continue;
+        var wx = ((tx % n) + n) % n;
+        jobs.push({
+          url: OTM_TPL.replace('{s}', 'a').replace('{z}', zoom)
+            .replace('{x}', wx).replace('{y}', ty),
+          dx: tx * 256 - origin.x, dy: ty * 256 - origin.y
+        });
+      }
+    }
+    var imgs = await Promise.all(jobs.map(function (j) { return loadTile(j.url); }));
+    imgs.forEach(function (im, i) {
+      if (im) ctx.drawImage(im, jobs[i].dx, jobs[i].dy, 256, 256);
+    });
+
+    // 2) 轨迹
+    var line = pts.map(function (p) { return projPt(p[0], p[1], view); });
+    drawPolyline(ctx, line, 7, 'rgba(255,255,255,.65)');
+    drawPolyline(ctx, line, 4, '#ff5b5b');
+
+    // 3) 岔路口（紫色）
+    junctionPoints().forEach(function (j) {
+      var xy = projPt(j.lat, j.lon, view);
+      ctx.beginPath();
+      ctx.arc(xy[0], xy[1], 9, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(192,123,255,.18)';
+      ctx.fill();
+      ctx.strokeStyle = '#c07bff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    // 4) 地名点（蓝点 + 名称）
+    poiPoints().forEach(function (p) {
+      var xy = projPt(p.lat, p.lon, view);
+      ctx.beginPath();
+      ctx.arc(xy[0], xy[1], 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#4da3ff';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.shadowColor = '#000';
+      ctx.shadowBlur = 4;
+      ctx.fillText(p.name, xy[0] + 8, xy[1] + 4);
+      ctx.shadowBlur = 0;
+    });
+
+    // 5) 转向圈（橙色，转角越大圈越大）
+    riskPoints().forEach(function (mk) {
+      var xy = projPt(mk.lat, mk.lon, view);
+      var deg = Math.abs(mk.turn || 60);
+      var r = deg >= 120 ? 16 : 11;
+      var isJ = mk.turn_kind === 'junction';
+      ctx.beginPath();
+      ctx.arc(xy[0], xy[1], r, 0, Math.PI * 2);
+      ctx.fillStyle = isJ ? 'rgba(192,123,255,.20)' : 'rgba(255,180,84,.18)';
+      ctx.fill();
+      ctx.strokeStyle = isJ ? '#c07bff' : '#ffb454';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.font = '700 11px system-ui, sans-serif';
+      ctx.fillStyle = isJ ? '#e0c0ff' : '#ffd8a0';
+      ctx.shadowColor = '#000';
+      ctx.shadowBlur = 4;
+      ctx.fillText(mk.turn_text || mk.name, xy[0] + r + 4, xy[1] + 4);
+      ctx.shadowBlur = 0;
+    });
+
+    // 6) 标题条 + 版权
+    var s = (state.result && state.result.summary) || {};
+    var title = (s.tracks && s.tracks[0] && s.tracks[0].name) || '路线';
+    var sub = [];
+    if (s.distance_m) sub.push((s.distance_m / 1000).toFixed(2) + ' km');
+    if (riskPoints().length) sub.push('转向 ' + riskPoints().length);
+    if (junctionPoints().length) sub.push('岔路 ' + junctionPoints().length);
+    if (poiPoints().length) sub.push('地名 ' + poiPoints().length);
+    ctx.fillStyle = 'rgba(14,20,27,.80)';
+    ctx.fillRect(0, 0, w, 44);
+    ctx.font = '700 16px system-ui, sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(title, 14, 20);
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillStyle = '#9fc2e8';
+    ctx.fillText(sub.join(' · '), 14, 37);
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,.6)';
+    ctx.textAlign = 'right';
+    ctx.fillText('© OpenTopoMap (CC-BY-SA)', w - 8, h - 6);
+    ctx.textAlign = 'left';
+    return canvas;
+  }
+
+  // ---------- 岔路检测（由顶部开关触发，不再单独放按钮） ----------
   var junctionTimer = null;
 
   function junctionHint(text, isErr) {
-    var el = $('junctionHint');
-    el.style.display = text ? 'block' : 'none';
+    var el = $('enrichHint');
+    if (!el) return;
     el.textContent = text || '';
-    el.className = 'hint';
+    el.style.display = text ? 'block' : 'none';
     el.style.color = isErr ? '#ff8080' : '';
   }
 
   function applyJunctionResult(j) {
     state.junctions = j.junctions || [];
-    drawMap();
     var n = state.junctions.length;
     var up = (state.result && state.result.summary)
       ? (state.result.summary.waypoints || []).filter(function (w) {
         return w.turn_kind === 'junction';
       }).length : 0;
-    junctionHint('检测到 ' + n + ' 处岔路' +
-      (up ? ('，其中 ' + up + ' 个转向已标为「岔路口」') : ''));
+    junctionHint('岔路 ' + n + ' 处' +
+      (up ? ('，' + up + ' 个转向已标为「岔路口」') : ''));
   }
 
   function pollJunctions() {
     if (junctionTimer) { clearTimeout(junctionTimer); junctionTimer = null; }
+    if (!state.projectId) return;
     apiFetch('/api/projects/' + state.projectId + '/junctions')
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (j.status === 'running' || j.status === 'started') {
-          junctionHint('正在检测沿线路网……');
+          junctionHint('正在检测沿线路网（约 1 分钟）……');
           junctionTimer = setTimeout(pollJunctions, 3000);
           return;
         }
-        $('junctionBtn').disabled = false;
-        $('junctionBtn').textContent = '🔀 重新检测岔路';
         if (j.status === 'failed') {
-          junctionHint('检测失败：' + (j.error || '未知原因'), true);
+          junctionHint('岔路检测失败：' + (j.error || '未知原因'), true);
           return;
         }
-        // 重算后摘要变了，重新取一次项目让航点表与转向圈同步
         apiFetch('/api/projects/' + state.projectId)
           .then(function (r) { return r.json(); })
           .then(function (d) {
@@ -764,161 +856,21 @@
           })
           .catch(function () { applyJunctionResult(j); });
       })
-      .catch(function (e) {
-        $('junctionBtn').disabled = false;
-        $('junctionBtn').textContent = '🔀 检测岔路';
-        junctionHint('轮询失败：' + e, true);
-      });
+      .catch(function () { /* 静默失败，不打扰 */ });
   }
 
-  $('junctionBtn').addEventListener('click', function () {
-    if (!state.projectId) { showErr('请先转换一次'); return; }
-    clearErr();
-    var btn = $('junctionBtn');
-    btn.disabled = true;
-    btn.textContent = '⏳ 检测中…';
-    junctionHint('正在检测沿线路网……');
-    var fd = new FormData();
-    fd.append('refresh', 'true');
-    apiFetch('/api/projects/' + state.projectId + '/junctions', { method: 'POST', body: fd })
-      .then(function (r) { return r.json(); })
+  function startJunctionJob() {
+    if (!state.projectId) return;
+    junctionHint('正在检测沿线路网（约 1 分钟）……');
+    apiFetch('/api/projects/' + state.projectId +
+             '/junctions?refresh=true'.replace('?refresh=true', ''),
+             { method: 'POST', body: (function () {
+               var fd = new FormData(); fd.append('refresh', 'true'); return fd;
+             })() })
       .then(function () { pollJunctions(); })
-      .catch(function (e) {
-        btn.disabled = false;
-        btn.textContent = '🔀 检测岔路';
-        junctionHint('发起失败：' + e, true);
-      });
-  });
+      .catch(function (e) { junctionHint('岔路检测发起失败：' + e, true); });
+  }
 
-  $('mapPng').addEventListener('click', function () {
-    if (!cmap || !trackLatLngs().length) { showErr('请先转换并显示地图'); return; }
-    var btn = $('mapPng');
-    btn.disabled = true;
-    btn.textContent = '⏳ 渲染中…';
-    (async function () {
-      try {
-        var scale = parseFloat($('mapScale').value) || 2;
-        var el = $('cmap');
-        var rect = el.getBoundingClientRect();
-        var w = Math.max(320, Math.round(rect.width));
-        var h = Math.max(240, Math.round(rect.height));
-        var canvas = document.createElement('canvas');
-        canvas.width = Math.round(w * scale);
-        canvas.height = Math.round(h * scale);
-        var ctx = canvas.getContext('2d');
-        ctx.scale(scale, scale);
-        ctx.fillStyle = '#0d131a';
-        ctx.fillRect(0, 0, w, h);
-
-        var zoom = cmap.getZoom();
-        var cp = cmap.project(cmap.getCenter(), zoom);
-        var origin = { x: cp.x - w / 2, y: cp.y - h / 2 };
-
-        // 瓦片
-        var minX = Math.floor(origin.x / 256), maxX = Math.floor((origin.x + w) / 256);
-        var minY = Math.floor(origin.y / 256), maxY = Math.floor((origin.y + h) / 256);
-        var n = Math.pow(2, zoom), jobs = [];
-        for (var tx = minX; tx <= maxX; tx++) {
-          for (var ty = minY; ty <= maxY; ty++) {
-            if (ty < 0 || ty >= n) continue;
-            var wx = ((tx % n) + n) % n;
-            jobs.push({ url: OTM_TPL.replace('{s}', 'a').replace('{z}', zoom)
-              .replace('{x}', wx).replace('{y}', ty),
-              dx: tx * 256 - origin.x, dy: ty * 256 - origin.y });
-          }
-        }
-        var imgs = await Promise.all(jobs.map(function (j) { return loadTile(j.url); }));
-        imgs.forEach(function (im, i) {
-          if (im) ctx.drawImage(im, jobs[i].dx, jobs[i].dy, 256, 256);
-        });
-
-        // 轨迹
-        var pts = trackLatLngs().map(function (p) {
-          return projectPt(p[0], p[1], zoom, origin);
-        });
-        ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-        ctx.beginPath();
-        pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
-        ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 7; ctx.stroke();
-        ctx.strokeStyle = '#ff5b5b'; ctx.lineWidth = 4; ctx.stroke();
-
-        // 风险圈
-        if ($('mapShowTurns').checked) {
-          riskPoints().forEach(function (mk) {
-            var xy = projectPt(mk.lat, mk.lon, zoom, origin);
-            var deg = Math.abs(mk.turn || 60);
-            var r = deg >= 120 ? 16 : 11;
-            ctx.beginPath();
-            ctx.arc(xy[0], xy[1], r, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,180,84,.18)'; ctx.fill();
-            ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2.5; ctx.stroke();
-          });
-        }
-
-        // 地名点
-        if ($('mapShowPois').checked) {
-          poiPoints().forEach(function (p) {
-            var xy = projectPt(p.lat, p.lon, zoom, origin);
-            ctx.beginPath();
-            ctx.arc(xy[0], xy[1], 5, 0, Math.PI * 2);
-            ctx.fillStyle = '#4da3ff'; ctx.fill();
-            ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
-            ctx.font = '600 11px sans-serif';
-            ctx.fillStyle = '#fff';
-            ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
-            ctx.fillText(p.name, xy[0] + 8, xy[1] + 4);
-            ctx.shadowBlur = 0;
-          });
-        }
-
-        // 岔路口（紫色圈）
-        if ($('mapShowJunctions').checked) {
-          junctionPoints().forEach(function (j) {
-            var xy = projectPt(j.lat, j.lon, zoom, origin);
-            ctx.beginPath();
-            ctx.arc(xy[0], xy[1], 9, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(192,123,255,.15)'; ctx.fill();
-            ctx.strokeStyle = '#c07bff'; ctx.lineWidth = 2; ctx.stroke();
-          });
-        }
-
-        // 标题 + 图例
-        var s = state.result.summary;
-        var title = (s.tracks && s.tracks[0] && s.tracks[0].name) || '路线';
-        var sub = [];
-        if (s.distance_m) sub.push((s.distance_m / 1000).toFixed(2) + ' km');
-        if (riskPoints().length) sub.push('风险点 ' + riskPoints().length);
-        if (poiPoints().length) sub.push('地名 ' + poiPoints().length);
-        if (junctionPoints().length) sub.push('岔路 ' + junctionPoints().length);
-        ctx.fillStyle = 'rgba(14,20,27,.78)';
-        ctx.fillRect(0, 0, w, 42);
-        ctx.font = '700 15px sans-serif';
-        ctx.fillStyle = '#fff';
-        ctx.fillText(title, 12, 19);
-        ctx.font = '12px sans-serif';
-        ctx.fillStyle = '#9fc2e8';
-        ctx.fillText(sub.join(' · '), 12, 35);
-        ctx.font = '10px sans-serif';
-        ctx.fillStyle = 'rgba(255,255,255,.55)';
-        ctx.textAlign = 'right';
-        ctx.fillText('© OpenTopoMap', w - 8, h - 6);
-        ctx.textAlign = 'left';
-
-        canvas.toBlob(function (blob) {
-          var url = URL.createObjectURL(blob);
-          var a = document.createElement('a');
-          a.href = url;
-          a.download = title.replace(/[\\/:*?"<>|]/g, '_') + '-map.png';
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
-          setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-          btn.disabled = false; btn.textContent = '📸 导出 PNG';
-        }, 'image/png');
-      } catch (e) {
-        btn.disabled = false; btn.textContent = '📸 导出 PNG';
-        showErr('出图失败：' + (e && e.message ? e.message : e));
-      }
-    })();
-  });
 
   // ---------- 对话修正 ----------
   function setChatEnabled(on) {
@@ -1032,7 +984,7 @@
     $('chatWrap').style.display = 'block';
     setChatEnabled(items.length > 0);
     state.pois = items;
-    if (state.trackPts && state.trackPts.length) drawMap();
+
   }
 
   function pollPois() {
@@ -1152,6 +1104,7 @@
           showProjectPanels(true);
           loadTrackForMap();
           pollPois();
+          pollJunctions();
           loadHistory();
         })
         .catch(function (e) { showErr('打开失败：' + e); });

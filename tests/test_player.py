@@ -362,14 +362,13 @@ def test_convert_panel_triggers_are_not_inside_hidden_cards():
 
 
 def test_convert_page_has_junction_detection():
-    """岔路检测入口与本页图层都要有。"""
+    """岔路能力：接口、绘制、路口提示都要在（入口已改为顶部开关）。"""
     html = _read(CONVERT_PAGE)
     js = _extract_inline_js(html)
-    assert 'id="junctionBtn"' in html, "缺少岔路检测按钮"
-    assert 'id="mapShowJunctions"' in html, "岔路图层应可开关"
     assert "/junctions" in js, "应调用岔路接口"
     assert "junctionPoints" in js, "缺少岔路绘制"
     assert "岔路口" in js, "应展示路口提示"
+    assert "startJunctionJob" in js, "缺少岔路任务触发"
 
 
 def test_convert_page_has_conversational_curation():
@@ -382,29 +381,41 @@ def test_convert_page_has_conversational_curation():
     assert "/api/projects/" in js and "/chat" in js
 
 
-def test_convert_page_exports_png_in_page():
-    """出图必须在本页完成，不再跳转到回放页。"""
+def test_convert_page_renders_route_image_into_analysis():
+    """线路图不再常驻页面，而是在分析文本里嵌成静态图片。"""
     html = _read(CONVERT_PAGE)
     js = _extract_inline_js(html)
-    assert 'id="cmap"' in html, "缺少页面内地图容器"
-    assert "leaflet" in html.lower(), "缺少 Leaflet"
-    assert 'id="mapPng"' in html, "缺少本页导出 PNG 按钮"
-    assert "projectPt" in js and "toBlob" in js, "缺少 canvas 出图逻辑"
-    assert "/api/projects/" in js
-    # 出图彻底不跳转：转换页不应再把用户送去回放页
-    assert "player.html" not in js, "出图不该再跳转到回放页"
-    assert 'id="guideMap"' not in html, "残留的跳转按钮应已移除"
+    # 页面里不应再有常驻地图容器 / 交互地图依赖
+    assert 'id="cmap"' not in html, "页面不该再嵌交互地图"
+    assert "unpkg.com/leaflet" not in html, "不再加载 Leaflet"
+    assert "L.map(" not in js, "不再创建交互地图"
+    assert 'id="mapCard"' not in html, "地图卡片应已移除"
+    # 但要有图片渲染能力，并插进分析文本
+    assert "renderRouteImage" in js, "缺少线路图渲染"
+    assert "toDataURL" in js, "应生成静态图片"
+    assert "routeImgWrap" in js, "图片应插到分析文本里"
+    assert "player.html" not in js, "不该跳到回放页"
 
 
-def test_convert_map_circles_risk_points():
-    """风险点要圈在地图上，而不是只在文字里说「4 处发卡弯」。"""
+def test_convert_toggles_live_next_to_ai_naming():
+    """岔路与地名补点改成顶部开关，跟 AI 推测命名放一起。"""
     html = _read(CONVERT_PAGE)
     js = _extract_inline_js(html)
-    assert "riskPoints" in js, "缺少风险点提取"
-    assert "circleMarker" in js, "风险点应用圆圈标出"
-    assert 'id="mapShowTurns"' in html, "应可切换风险圈显示"
-    assert 'id="mapShowPois"' in html, "应可切换地名点显示"
-    assert "turn_text" in js, "风险点来自转向信息"
+    assert 'id="aiNames"' in html
+    for tid in ('optJunction', 'optPoi'):
+        assert ('id="%s"' % tid) in html, "缺少开关 %s" % tid
+    assert "maybeRunEnrichments" in js, "开关应驱动补点/岔路任务"
+    # 旧的独立按钮应退居幕后
+    assert "junctionBtn" not in js, "岔路不该再有单独按钮"
+
+
+def test_convert_route_image_draws_risk_and_junction():
+    """图片上仍要圈出风险点与岔路，而不是只在文字里说。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert "riskPoints" in js and "junctionPoints" in js
+    assert "turn_text" in js
+    assert "arc(" in js, "应绘制圆圈"
 
 
 def test_waypoint_summary_has_coordinates():
