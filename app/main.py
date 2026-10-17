@@ -811,7 +811,8 @@ async def detect_junctions(project_id: str, refresh: bool = Form(False)):
     running = _junction_jobs.get(project_id)
     if running and running.get("status") == "running":
         return {"status": "running"}
-    force = _truthy(refresh)
+    force = (refresh if isinstance(refresh, bool)
+             else str(refresh).strip().lower() in ("1", "true", "yes", "on"))
     if not force:
         cached = project_store.load_junctions(project_id)
         if cached.get("junctions"):
