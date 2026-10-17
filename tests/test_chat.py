@@ -147,6 +147,18 @@ class TestPrompt:
         prompt = pc.build_prompt({}, [], [], "看看")
         assert "（无）" in prompt
 
+    def test_prompt_tells_model_when_reset_available(self):
+        """当前为空但有快照时，必须告诉模型可以 reset，否则它会拒绝执行。"""
+        prompt = pc.build_prompt({}, [], [], "恢复一下", _items())
+        assert "reset" in prompt
+        assert "筛选前共有 4 个" in prompt
+        assert "黑湖垭口" in prompt
+
+    def test_prompt_no_note_when_nothing_filtered(self):
+        items = _items()
+        prompt = pc.build_prompt({}, items, [], "看看", items)
+        assert "筛选前共有" not in prompt
+
 
 class TestRunTurn:
     class _S:

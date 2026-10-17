@@ -49,7 +49,8 @@ ops 只能是以下之一：
 - {{"op": "rename_poi", "name": "原名", "new_name": "新名"}}
 - {{"op": "reset"}}
 
-规则：名称必须来自上面的列表；不确定就不输出该 op；没有可做的 ops 时输出空数组。"""
+规则：名称必须来自上面的列表；不确定就不输出该 op；没有可做的 ops 时输出空数组。
+用户说「恢复/全部找回/还原」时用 reset。"""
 
 
 class ChatError(RuntimeError):
@@ -83,15 +84,22 @@ def _overview(summary: dict) -> str:
     return "%.2f km，%d 个航点" % (dist, summary.get("waypoint_count") or 0)
 
 
-def build_prompt(summary: dict, items: list, history: list, message: str) -> str:
+def build_prompt(summary: dict, items: list, history: list, message: str,
+                 original: list | None = None) -> str:
     tracks = (summary or {}).get("tracks") or [{}]
     kinds = sorted({it.get("type_label") for it in items if it.get("type_label")})
+    # 当前为空但仍有快照时必须告诉模型，否则它会认为「没什么可恢复」而不发 reset
+    note = ""
+    if original is not None and len(original) != len(items):
+        names = "、".join(it.get("name") or "" for it in original[:12])
+        note = ("\n注意：筛选前共有 %d 个地名点（%s），可用 reset 恢复。\n"
+                % (len(original), names))
     return TEMPLATE.format(
         name=tracks[0].get("name") or "未命名",
         overview=_overview(summary),
         pois=_poi_lines(items),
         kinds="、".join(kinds) or "无",
-        history=_history_text(history),
+        history=_history_text(history) + note,
         message=(message or "")[:MAX_MESSAGE_CHARS],
     )
 
@@ -193,7 +201,7 @@ def run_turn(summary: dict, items: list, history: list, message: str,
     """执行一轮对话，返回 {reply, ops, items, applied, rejected}。"""
     if not ai_naming.is_configured(settings):
         raise ChatError("未配置 AI_API_KEY，无法使用对话修正")
-    prompt = build_prompt(summary, items, history, message)
+    prompt = build_prompt(summary, items, history, message, original)
     try:
         text = ai_naming.chat(prompt, settings, SYSTEM)
     except ai_naming.AiNamingError as exc:
