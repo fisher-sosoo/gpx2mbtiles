@@ -115,6 +115,19 @@
   <div class="hint" id="useHint">下载后可导入仅支持 GPX 的 App（Avenza / Guru Maps / 两步路 等），也可直接回到离线地图页生成底图。</div>
 </div>
 
+<div class="card" id="poiCard" style="display:none">
+  <h2>地名补点 <span class="hint" id="poiStat" style="font-weight:400"></span></h2>
+  <div class="hint" style="margin-bottom:10px">
+    从 OpenStreetMap 拉取沿线的垭口、牛场、营地、山峰、湖泊与过河点。
+    垭口/牛场要求贴近路线，山峰作为地标可远观，村镇只在起终点标注，河流只在过河处标注。
+  </div>
+  <div id="poiList"><div class="hint">未查询</div></div>
+  <div class="row2" style="margin-top:10px">
+    <button class="secondary" id="poiBtn" style="width:50%">🧭 补充地名航点</button>
+    <button class="secondary" id="poiExportBtn" style="width:50%;display:none">⬇️ 下载含地名 GPX</button>
+  </div>
+</div>
+
 <div class="card" id="wpCard" style="display:none">
   <h2>3 · 航点命名明细</h2>
   <div class="summary-line" id="sourceStats"></div>
@@ -244,6 +257,8 @@
         state.result = res.j;
         state.projectId = res.j.project_id || null;
         render(res.j);
+        $('poiCard').style.display = 'none';
+        $('poiExportBtn').style.display = 'none';
         loadHistory();
       })
       .catch(function (e) {
@@ -321,6 +336,99 @@
     });
   }
 
+  // ---------- 地名补点 ----------
+  var poiTimer = null;
+
+  function stopPoiPoll() {
+    if (poiTimer) { clearTimeout(poiTimer); poiTimer = null; }
+  }
+
+  function renderPois(j) {
+    $('poiCard').style.display = 'block';
+    var d = j.data || {};
+    var items = d.items || [];
+    $('poiStat').textContent = items.length ? '（' + items.length + ' 个）' : '';
+    var list = $('poiList');
+    list.innerHTML = '';
+    if (!items.length) {
+      list.innerHTML = '<div class="hint">' + (j.error ? ('查询失败：' + j.error) : '没有找到符合条件的地名点') + '</div>';
+      return;
+    }
+    var extra = [];
+    if (d.dropped) extra.push('去重 ' + d.dropped + ' 个');
+    if (d.truncated) extra.push('截断 ' + d.truncated + ' 个');
+    if (extra.length) {
+      var note = document.createElement('div');
+      note.className = 'hint';
+      note.textContent = extra.join(' · ');
+      list.appendChild(note);
+    }
+    var tbl = document.createElement('table');
+    tbl.className = 'tbl';
+    tbl.innerHTML = '<thead><tr><th>名称</th><th>类型</th><th>距轨迹</th><th>海拔</th></tr></thead><tbody></tbody>';
+    var tb = tbl.querySelector('tbody');
+    items.forEach(function (it) {
+      var tr = document.createElement('tr');
+      var nc = document.createElement('td'); nc.className = 'nm'; nc.textContent = it.name;
+      var tc = document.createElement('td'); tc.textContent = it.type_label || it.kind;
+      var dc = document.createElement('td'); dc.textContent = it.distance_m + ' m';
+      var ec = document.createElement('td'); ec.textContent = it.ele ? Math.round(it.ele) + ' m' : '-';
+      tr.appendChild(nc); tr.appendChild(tc); tr.appendChild(dc); tr.appendChild(ec);
+      tb.appendChild(tr);
+    });
+    list.appendChild(tbl);
+    $('poiExportBtn').style.display = 'inline-block';
+  }
+
+  function pollPois() {
+    if (!state.projectId) return;
+    apiFetch('/api/projects/' + state.projectId + '/pois')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.status === 'done' || j.status === 'cached') { renderPois(j); return; }
+        if (j.status === 'failed') {
+          $('poiCard').style.display = 'block';
+          $('poiList').innerHTML = '<div class="hint" style="color:#ffb4b4">查询失败：' + (j.error || '') + '</div>';
+          return;
+        }
+        if (j.status === 'running' || j.status === 'started') {
+          $('poiStat').textContent = '（查询中…约需 40 秒）';
+          poiTimer = setTimeout(pollPois, 3000);
+        }
+      })
+      .catch(function () { poiTimer = setTimeout(pollPois, 5000); });
+  }
+
+  $('poiBtn').addEventListener('click', function () {
+    if (!state.projectId) { showErr('请先转换一次，地名补点挂在项目上'); return; }
+    clearErr();
+    $('poiBtn').disabled = true;
+    $('poiBtn').textContent = '⏳ 查询中…';
+    $('poiCard').style.display = 'block';
+    $('poiList').innerHTML = '<div class="hint">正在查询 OpenStreetMap（约 40 秒）…</div>';
+    $('poiStat').textContent = '';
+    var fd = new FormData();
+    fd.append('refresh', 'false');
+    apiFetch('/api/projects/' + state.projectId + '/pois', { method: 'POST', body: fd })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        $('poiBtn').disabled = false;
+        $('poiBtn').textContent = '🧭 补充地名航点';
+        if (j.status === 'cached') { renderPois(j); return; }
+        pollPois();
+      })
+      .catch(function (e) {
+        $('poiBtn').disabled = false;
+        $('poiBtn').textContent = '🧭 补充地名航点';
+        showErr('查询失败：' + e);
+      });
+  });
+
+  $('poiExportBtn').addEventListener('click', function () {
+    if (!state.projectId || !ensureKey()) return;
+    window.location.href = withToken('/api/projects/' + state.projectId + '/export');
+  });
+
   // ---------- 历史项目 ----------
   function fmtTime(ts) {
     var d = new Date(ts * 1000);
@@ -386,6 +494,9 @@
           state.result = { gpx: d.gpx, filename: (d.name || 'track') + '.gpx', summary: d.summary };
           state.projectId = d.id;
           render(state.result);
+          $('poiCard').style.display = 'none';
+          $('poiExportBtn').style.display = 'none';
+          pollPois();
           loadHistory();
         })
         .catch(function (e) { showErr('打开失败：' + e); });

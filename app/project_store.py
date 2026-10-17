@@ -80,6 +80,31 @@ class ProjectStore:
     def output_path(self, project_id: str) -> Path:
         return self.project_dir(project_id) / "output.gpx"
 
+    def pois_path(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "pois.json"
+
+    def save_pois(self, project_id: str, payload: dict) -> None:
+        """把地名补点结果缓存到项目目录。"""
+        self.project_dir(project_id).mkdir(parents=True, exist_ok=True)
+        self.pois_path(project_id).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_pois(self, project_id: str):
+        """读缓存；不存在返回 None。"""
+        path = self.pois_path(project_id)
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def clear_pois(self, project_id: str) -> None:
+        try:
+            self.pois_path(project_id).unlink()
+        except OSError:
+            pass
+
     # ---------- 写入 ----------
     def save(self, *, source_bytes: bytes, source_name: str, ext: str,
              result, params: dict) -> dict:

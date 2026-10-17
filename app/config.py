@@ -126,6 +126,15 @@ class Settings:
         # 单项目通常几十 KB，200 个项目也就几 MB。
         self.max_projects = _env_int("MAX_PROJECTS", 200, 0, 10000)
         self.project_retention_days = _env_int("PROJECT_RETENTION_DAYS", 30, 0, 3650)
+
+        # ---- OSM 地名补点 ----
+        # Overpass 是公共设施：查询慢（实测约 42 秒）、有配额，必须限流并缓存结果。
+        # 查询走代理（墙内直连 DNS 解析失败），为空时复用 TILE_PROXY。
+        self.poi_enabled = os.getenv("POI_ENABLED", "1").strip().lower()             not in ("0", "false", "no", "off")
+        self.poi_proxy = os.getenv("POI_PROXY", "").strip()
+        self.poi_timeout_seconds = _env_int("POI_TIMEOUT_SECONDS", 180, 10, 600)
+        self.poi_bbox_pad_m = _env_float("POI_BBOX_PAD_METERS", 500.0, 0.0, 5000.0)
+        self.poi_max_count = _env_int("POI_MAX_COUNT", 60, 1, 500)
         # 墙内服务器访问模型 API 必须走代理；为空时复用 TILE_PROXY
         self.ai_proxy = os.getenv("AI_PROXY", "").strip()
         # 低于此剩余空间时停止写缓存（默认 3GB；8G 缓存 + 3G 余量，40G 盘安全）

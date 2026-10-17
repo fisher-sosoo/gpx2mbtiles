@@ -277,6 +277,9 @@ def test_convert_page_exists_and_has_features():
         "loadHistory",               # 历史加载
         "reconvert",                 # 重转
         "historyTotal",              # 历史计数
+        "/pois",                     # 地名补点
+        "renderPois",                # 地名列表渲染
+        "/export",                   # 含地名导出
     ):
         assert snippet in html, f"转换页缺少要素: {snippet}"
 

@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import math
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from .gpx_converter import convert
 from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
+from .poi_enricher import PoiQueryError, fetch_overpass, filter_pois
 from .project_store import ProjectNotFoundError, ProjectStore
 from .task_manager import (COMPLETED, TaskLimitError, TaskManager,
                            TaskNotFoundError)
@@ -492,6 +495,163 @@ async def reconvert_project(project_id: str,
         "project_id": project["id"],
         "reconverted_from": project_id,
     }
+
+
+# ---------------------------------------------------------------- 地名补点
+# Overpass 一次查询要 40 秒上下，绝不能同步等：发起即返回，后台跑，结果落 pois.json。
+
+_poi_jobs: dict = {}
+
+
+def _project_track_points(store: ProjectStore, project_id: str):
+    """从项目的产物 GPX 里取轨迹点（用于算包围盒与距离）。"""
+    import gpxpy
+    path = store.output_path(project_id)
+    if not path.is_file():
+        return []
+    try:
+        gpx = gpxpy.parse(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    pts = []
+    for trk in gpx.tracks:
+        for seg in trk.segments:
+            for p in seg.points:
+                pts.append((float(p.latitude), float(p.longitude)))
+    return pts
+
+
+def _bbox_of(points, pad_m: float):
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+    dlat = pad_m / 111320.0
+    cos_lat = max(0.0001, math.cos(math.radians(sum(lats) / len(lats))))
+    dlon = pad_m / (111320.0 * cos_lat)
+    return (min(lats) - dlat, min(lons) - dlon,
+            max(lats) + dlat, max(lons) + dlon)
+
+
+async def _run_poi_job(project_id: str, force: bool = False):
+    job = {"status": "running", "started": time.time(), "count": 0, "error": ""}
+    _poi_jobs[project_id] = job
+    try:
+        points = _project_track_points(project_store, project_id)
+        if not points:
+            raise PoiQueryError("项目里没有可用的轨迹点")
+        bbox = _bbox_of(points, settings.poi_bbox_pad_m)
+        elements = await asyncio.to_thread(
+            fetch_overpass, bbox, settings, settings.poi_timeout_seconds)
+        result = filter_pois(elements, points, settings)
+        payload = {
+            "fetched_at": result.fetched_at,
+            "bbox": [round(v, 6) for v in bbox],
+            "total_raw": result.total_raw,
+            "dropped": result.dropped,
+            "truncated": result.truncated,
+            "items": result.items,
+        }
+        project_store.save_pois(project_id, payload)
+        job.update(status="done", count=len(result.items),
+                   dropped=result.dropped, truncated=result.truncated,
+                   total_raw=result.total_raw, finished=time.time())
+        logger.info("poi enrichment %s: %d items (raw %d, dropped %d, truncated %d)",
+                    project_id, len(result.items), result.total_raw,
+                    result.dropped, result.truncated)
+    except PoiQueryError as exc:
+        job.update(status="failed", error=str(exc), finished=time.time())
+    except Exception as exc:                      # 兜底：不能拖垮服务
+        logger.exception("poi enrichment failed for %s", project_id)
+        job.update(status="failed", error=f"{type(exc).__name__}: {exc}",
+                   finished=time.time())
+
+
+@app.post("/api/projects/{project_id}/pois", dependencies=[Depends(require_api_key)])
+async def enrich_project_pois(project_id: str, refresh: bool = Form(False)):
+    """发起地名补点（异步）。refresh=true 时忽略缓存重查。"""
+    try:
+        project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    if not getattr(settings, "poi_enabled", True):
+        raise HTTPException(status_code=503, detail="地名补点未启用（POI_ENABLED=0）")
+    want_refresh = (refresh if isinstance(refresh, bool)
+                    else str(refresh).strip().lower() in ("1", "true", "yes", "on"))
+    if not want_refresh:
+        cached = project_store.load_pois(project_id)
+        if cached is not None:
+            return {"status": "cached", "count": len(cached.get("items", [])),
+                    "data": cached}
+    running = _poi_jobs.get(project_id)
+    if running and running.get("status") == "running":
+        return {"status": "running", "count": 0}
+    asyncio.create_task(_run_poi_job(project_id, force=want_refresh))
+    return {"status": "started", "count": 0}
+
+
+@app.get("/api/projects/{project_id}/pois", dependencies=[Depends(require_api_key)])
+async def get_project_pois(project_id: str):
+    """取地名补点结果：缓存优先，其次任务状态。"""
+    try:
+        project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    job = _poi_jobs.get(project_id)
+    cached = project_store.load_pois(project_id)
+    if cached is not None:
+        return {"status": "done", "count": len(cached.get("items", [])),
+                "data": cached}
+    if job:
+        return {"status": job.get("status", "running"),
+                "count": job.get("count", 0),
+                "error": job.get("error", "")}
+    return {"status": "none", "count": 0}
+
+
+def _merge_pois_into_gpx(gpx_text: str, pois: list) -> str:
+    """把地名点作为额外 <wpt> 插入 GPX（在 </gpx> 前），不改动原有轨迹。"""
+    from xml.sax.saxutils import escape, quoteattr
+    parts = []
+    for it in pois:
+        name = it.get("name") or ""
+        label = f"{it.get('type_label') or ''} {name}".strip()
+        bits = [f"来源 OSM", f"距轨迹 {it.get('distance_m')} m"]
+        if it.get("ele") is not None:
+            bits.insert(0, f"海拔 {int(round(it['ele']))} m")
+        desc = " · ".join(bits)
+        parts.append(
+            f'  <wpt lat={quoteattr("%.6f" % it["lat"])} '
+            f'lon={quoteattr("%.6f" % it["lon"])}>\n')
+        if it.get("ele") is not None:
+            parts.append(f'    <ele>{"%.6f" % it["ele"]}</ele>\n')
+        parts.append(f"    <name>{escape(label)}</name>\n")
+        parts.append(f"    <desc>{escape(desc)}</desc>\n")
+        parts.append(f"    <cmt>{escape(name)}</cmt>\n")
+        parts.append("    <sym>Scenic Area</sym>\n")
+        parts.append("  </wpt>\n")
+    idx = gpx_text.rfind("</gpx>")
+    if idx < 0:
+        return gpx_text
+    return gpx_text[:idx] + "".join(parts) + gpx_text[idx:]
+
+
+@app.get("/api/projects/{project_id}/export",
+         dependencies=[Depends(require_api_key)])
+async def export_project_with_pois(project_id: str):
+    """导出 GPX 文本；?pois=1 时把地名点并入。"""
+    try:
+        meta = project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    try:
+        gpx_text = project_store.read_gpx(project_id)
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from None
+    cached = project_store.load_pois(project_id)
+    if cached and cached.get("items"):
+        gpx_text = _merge_pois_into_gpx(gpx_text, cached["items"])
+    fname = f"{_safe_name(meta.get('name') or project_id)}.gpx"
+    return Response(content=gpx_text, media_type="application/gpx+xml",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @app.get("/api/projects/{project_id}/download",
