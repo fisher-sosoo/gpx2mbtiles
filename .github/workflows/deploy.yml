@@ -78,19 +78,17 @@ jobs:
 
             # 服务器 git 走 mihomo 代理。实测 7893 会偶发不可用（曾导致两次部署失败），
             # 而 7890/7891 往往还是通的 —— 所以按端口轮换重试，别把可用性绑在单点上。
+            # 服务器上没有 nc，别做端口预检，直接逐个试（失败就换下一个）
             FETCH_OK=0
             for p in 7893 7890 7891; do
-              if nc -z 127.0.0.1 "$p" 2>/dev/null; then
-                echo "尝试代理端口 $p ..."
-                git config http.proxy "http://127.0.0.1:$p"
-                if git fetch --tags --force --prune; then
-                  FETCH_OK=1
-                  echo "fetch 成功（代理端口 $p）"
-                  break
-                fi
-              else
-                echo "端口 $p 未监听，跳过"
+              echo "尝试代理端口 $p ..."
+              git config http.proxy "http://127.0.0.1:$p"
+              if git fetch --tags --force --prune; then
+                FETCH_OK=1
+                echo "fetch 成功（代理端口 $p）"
+                break
               fi
+              echo "端口 $p fetch 失败，换下一个"
             done
 
             if [ "$FETCH_OK" != "1" ]; then
