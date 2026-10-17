@@ -101,30 +101,52 @@ def build_query(bbox, timeout_s: int) -> str:
     )
 
 
-def fetch_overpass(bbox, settings, timeout_s: int = 180) -> list:
-    """同步查询（放到线程里跑，避免堵事件循环）。"""
-    query = build_query(bbox, timeout_s=120)
+def _query_once(query: str, settings, timeout_s: int, proxy: str) -> list:
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
     req = urllib.request.Request(OVERPASS_URL, data=data, headers={
         "User-Agent": USER_AGENT,
         "Content-Type": "application/x-www-form-urlencoded",
     })
-    proxy = getattr(settings, "poi_proxy", "") or getattr(settings, "tile_proxy", "")
     if proxy:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
     else:
         opener = urllib.request.build_opener()
-    try:
-        with opener.open(req, timeout=timeout_s) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise PoiQueryError(f"上游返回 {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise PoiQueryError(f"查询失败：{exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise PoiQueryError(f"响应不是合法 JSON：{exc}") from exc
+    with opener.open(req, timeout=timeout_s) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
     return payload.get("elements", []) or []
+
+
+def fetch_overpass(bbox, settings, timeout_s: int = 180) -> list:
+    """同步查询（放到线程里跑，避免堵事件循环）。
+
+    Overpass 是公共设施，5xx（尤其 502）是**常态**而不是异常：
+    实测开发期反复查询后经常返回 502，隔几秒重试通常就好了。
+    所以对 5xx 与网络错误做退避重试；4xx 是查询本身有问题，不重试。
+    """
+    query = build_query(bbox, timeout_s=120)
+    proxy = getattr(settings, "poi_proxy", "") or getattr(settings, "tile_proxy", "")
+    retries = getattr(settings, "poi_retry_max", 2)
+    delays = (2.0, 6.0, 15.0)
+    last = ""
+    for attempt in range(retries + 1):
+        try:
+            return _query_once(query, settings, timeout_s, proxy)
+        except urllib.error.HTTPError as exc:
+            last = "上游返回 %s" % exc.code
+            if exc.code < 500:
+                raise PoiQueryError(last) from exc        # 查询本身有问题，别重试
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = "查询失败：%s" % exc
+        except json.JSONDecodeError as exc:
+            last = "响应不是合法 JSON：%s" % exc
+        if attempt < retries:
+            wait = delays[attempt] if attempt < len(delays) else delays[-1]
+            logger.warning("poi query attempt %d failed (%s), retrying in %.0fs",
+                           attempt + 1, last, wait)
+            time.sleep(wait)
+    raise PoiQueryError(last + "（已重试 %d 次，公共查询服务可能过载，请稍后再试）"
+                        % retries)
 
 
 class PoiQueryError(RuntimeError):

@@ -135,6 +135,8 @@ class Settings:
         self.poi_timeout_seconds = _env_int("POI_TIMEOUT_SECONDS", 180, 10, 600)
         self.poi_bbox_pad_m = _env_float("POI_BBOX_PAD_METERS", 500.0, 0.0, 5000.0)
         self.poi_max_count = _env_int("POI_MAX_COUNT", 60, 1, 500)
+        # Overpass 5xx 是常态，需要退避重试；4xx 不重试
+        self.poi_retry_max = _env_int("POI_RETRY_MAX", 2, 0, 5)
 
         # ---- 行前指南（天气）----
         # Open-Meteo 免费无需 key，实测 2.6 秒；墙内需代理，为空时复用 TILE_PROXY。

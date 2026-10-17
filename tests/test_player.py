@@ -324,6 +324,27 @@ def test_convert_page_has_project_history():
     assert "/download" in js, "缺少下载调用"
 
 
+@pytest.mark.parametrize("path", ["web/convert.html", "web/player.html",
+                                 "web/index.html", "web/portal.html"])
+def test_page_element_ids_all_exist(path):
+    """JS 里引用的元素 ID 必须真的存在。
+
+    回归防护：这类错误不会报错，只表现为「按钮点了没反应」，
+    在静态检查里最容易漏。历史上生成器页就踩过类似坑。
+    """
+    full = ROOT / path
+    if not full.is_file():
+        pytest.skip(f"{path} 不存在")
+    html = _read(full)
+    ids = set(re.findall(r'\bid="([^"]+)"', html))
+    blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
+    js = blocks[-1] if blocks else ""
+    refs = set(re.findall(r"\$\('([A-Za-z0-9_-]+)'\)", js))
+    refs |= set(re.findall(r"getElementById\('([A-Za-z0-9_-]+)'\)", js))
+    missing = sorted(r for r in refs if r not in ids)
+    assert not missing, f"{path} 引用了不存在的元素: {missing}"
+
+
 def test_convert_page_has_conversational_curation():
     """对话修正面板要能接续上下文并展示执行结果。"""
     html = _read(CONVERT_PAGE)

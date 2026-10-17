@@ -34,6 +34,82 @@ class TestQuery:
         assert "out geom tags" in q
 
 
+class TestOverpassRetry:
+    """Overpass 的 5xx 是常态，必须退避重试；4xx 不该重试。"""
+
+    class _S:
+        poi_proxy = ""
+        tile_proxy = ""
+        poi_retry_max = 2
+
+    def _boom(self, code):
+        import urllib.error
+        from io import BytesIO
+        return urllib.error.HTTPError("u", code, "err", {}, BytesIO(b""))
+
+    def test_retries_on_5xx_then_succeeds(self, monkeypatch):
+        from app import poi_enricher as pe
+        calls = {"n": 0}
+
+        def fake(query, settings, timeout_s, proxy):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise self._boom(502)
+            return [{"type": "node", "lat": 1, "lon": 2, "tags": {"name": "x"}}]
+
+        monkeypatch.setattr(pe, "_query_once", fake)
+        monkeypatch.setattr(pe.time, "sleep", lambda s: None)
+        out = pe.fetch_overpass((0, 0, 1, 1), self._S())
+        assert calls["n"] == 3
+        assert len(out) == 1
+
+    def test_gives_up_after_retries(self, monkeypatch):
+        from app import poi_enricher as pe
+        calls = {"n": 0}
+
+        def fake(*a):
+            calls["n"] += 1
+            raise self._boom(502)
+
+        monkeypatch.setattr(pe, "_query_once", fake)
+        monkeypatch.setattr(pe.time, "sleep", lambda s: None)
+        import pytest as _pytest
+        with _pytest.raises(pe.PoiQueryError, match="已重试"):
+            pe.fetch_overpass((0, 0, 1, 1), self._S())
+        assert calls["n"] == 3, "应尝试 1 次 + 重试 2 次"
+
+    def test_no_retry_on_4xx(self, monkeypatch):
+        from app import poi_enricher as pe
+        calls = {"n": 0}
+
+        def fake(*a):
+            calls["n"] += 1
+            raise self._boom(400)
+
+        monkeypatch.setattr(pe, "_query_once", fake)
+        monkeypatch.setattr(pe.time, "sleep", lambda s: None)
+        import pytest as _pytest
+        with _pytest.raises(pe.PoiQueryError, match="400"):
+            pe.fetch_overpass((0, 0, 1, 1), self._S())
+        assert calls["n"] == 1, "4xx 不该重试"
+
+    def test_retries_on_network_error(self, monkeypatch):
+        from app import poi_enricher as pe
+        import urllib.error
+        calls = {"n": 0}
+
+        def fake(*a):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.URLError("timeout")
+            return []
+
+        monkeypatch.setattr(pe, "_query_once", fake)
+        monkeypatch.setattr(pe.time, "sleep", lambda s: None)
+        assert pe.fetch_overpass((0, 0, 1, 1), self._S()) == []
+        assert calls["n"] == 2
+
+
 class TestGeometryHelpers:
     def test_crosses_when_opposite_sides(self):
         # 轨迹自南向北穿过东西向的河
