@@ -379,8 +379,10 @@ def test_convert_page_exports_png_in_page():
     assert "leaflet" in html.lower(), "缺少 Leaflet"
     assert 'id="mapPng"' in html, "缺少本页导出 PNG 按钮"
     assert "projectPt" in js and "toBlob" in js, "缺少 canvas 出图逻辑"
-    # 仍然保留交接入口作为可选项，但出图不依赖它
     assert "/api/projects/" in js
+    # 出图彻底不跳转：转换页不应再把用户送去回放页
+    assert "player.html" not in js, "出图不该再跳转到回放页"
+    assert 'id="guideMap"' not in html, "残留的跳转按钮应已移除"
 
 
 def test_convert_map_circles_risk_points():

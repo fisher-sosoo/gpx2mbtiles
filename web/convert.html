@@ -212,9 +212,7 @@
       <button class="secondary" id="guideCopy" style="width:50%">复制文本</button>
       <button class="secondary" id="guideDl" style="width:50%">下载 Markdown</button>
     </div>
-    <button class="secondary" id="guideMap" style="margin-top:8px">🗺️ 在地图上查看并出图</button>
-    <div class="hint">会把「含地名点的 GPX」交给回放页：底图用 OpenTopoMap，地名点自动成为标记，
-      可用右上角「导出 PNG」出图（1×/2×/3×）。</div>
+
   </div>
 </div>
 
@@ -877,32 +875,6 @@
   $('chatSend').addEventListener('click', sendChat);
   $('chatInput').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
-  });
-
-  // ---------- 交接给回放页出图 ----------
-  // 回放页约定不调 /api，所以由本页取好 GPX，用 sessionStorage 交过去。
-  $('guideMap').addEventListener('click', function () {
-    if (!state.projectId) { showErr('请先转换一次'); return; }
-    clearErr();
-    var btn = $('guideMap');
-    btn.disabled = true;
-    btn.textContent = '⏳ 准备中…';
-    apiFetch('/api/projects/' + state.projectId + '/export')
-      .then(function (r) { if (!r.ok) throw new Error('导出失败 ' + r.status); return r.text(); })
-      .then(function (text) {
-        var name = (state.result && state.result.filename) || 'track.gpx';
-        try {
-          sessionStorage.setItem('gpx2mbtiles_handoff', JSON.stringify({ name: name, text: text }));
-        } catch (e) {
-          throw new Error('浏览器存储已满，无法交接（' + e.message + '）');
-        }
-        window.location.href = '/gpx/player.html';
-      })
-      .catch(function (e) {
-        btn.disabled = false;
-        btn.textContent = '🗺️ 在地图上查看并出图';
-        showErr('准备失败：' + (e && e.message ? e.message : e));
-      });
   });
 
   // ---------- 地名补点 ----------
