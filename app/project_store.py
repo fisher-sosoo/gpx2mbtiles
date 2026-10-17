@@ -116,6 +116,24 @@ class ProjectStore:
         except (OSError, ValueError):
             return None
 
+    def chat_path(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "chat.json"
+
+    def load_chat(self, project_id: str) -> list:
+        path = self.chat_path(project_id)
+        if not path.is_file():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def save_chat(self, project_id: str, messages: list) -> None:
+        self.project_dir(project_id).mkdir(parents=True, exist_ok=True)
+        self.chat_path(project_id).write_text(
+            json.dumps(messages[-60:], ensure_ascii=False, indent=2), encoding="utf-8")
+
     def clear_pois(self, project_id: str) -> None:
         try:
             self.pois_path(project_id).unlink()

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import math
 import time
@@ -16,6 +17,7 @@ from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
 from .poi_enricher import PoiQueryError, fetch_overpass, filter_pois
+from . import project_chat
 from . import trip_briefing
 from . import weather as weather_mod
 from .project_store import ProjectNotFoundError, ProjectStore
@@ -658,6 +660,62 @@ async def export_project_with_pois(project_id: str):
                    + quote(fname))
     return Response(content=gpx_text, media_type="application/gpx+xml",
                     headers={"Content-Disposition": disposition})
+
+
+# ---------------------------------------------------------------- 对话式修正
+# 模型只能输出受限操作（删点/按类型保留/改名/reset），由 apply_ops 校验后执行。
+
+@app.post("/api/projects/{project_id}/chat", dependencies=[Depends(require_api_key)])
+async def chat_curate(project_id: str, message: str = Form(...)):
+    """一轮对话：按自然语言修正地名点。"""
+    try:
+        meta = project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    msg = (message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="消息不能为空")
+
+    pois = project_store.load_pois(project_id)
+    if not pois or not pois.get("items"):
+        raise HTTPException(status_code=409,
+                            detail="还没有地名点，请先做一次「补充地名航点」")
+    items = pois["items"]
+    # 首次修正确保保留原始快照，便于 reset
+    if "original" not in pois:
+        pois["original"] = json.loads(json.dumps(items, ensure_ascii=False))
+
+    history = project_store.load_chat(project_id)
+    try:
+        result = await asyncio.to_thread(
+            project_chat.run_turn, meta.get("summary") or {}, items,
+            history, msg, settings, pois.get("original"))
+    except project_chat.ChatError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    pois["items"] = result["items"]
+    pois["curated"] = True
+    project_store.save_pois(project_id, pois)
+
+    now = time.time()
+    history.append({"role": "user", "content": msg, "ts": now})
+    history.append({"role": "assistant", "content": result["reply"], "ts": now,
+                    "applied": result["applied"], "rejected": result["rejected"]})
+    project_store.save_chat(project_id, history)
+
+    return {"reply": result["reply"], "applied": result["applied"],
+            "rejected": result["rejected"], "count": len(result["items"]),
+            "items": result["items"], "history": history[-20:]}
+
+
+@app.get("/api/projects/{project_id}/chat", dependencies=[Depends(require_api_key)])
+async def get_chat(project_id: str):
+    """取对话历史。"""
+    try:
+        project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    return {"history": project_store.load_chat(project_id)}
 
 
 # ---------------------------------------------------------------- 行前指南

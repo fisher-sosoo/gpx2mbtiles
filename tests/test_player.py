@@ -283,6 +283,9 @@ def test_convert_page_exists_and_has_features():
         "/guide",                    # 行前指南
         "renderGuide",               # 指南渲染
         "guideStart",                # 日期范围输入
+        "/chat",                     # 对话式修正
+        "sendChat",                  # 发送对话
+        "chatInput",                 # 对话输入框
     ):
         assert snippet in html, f"转换页缺少要素: {snippet}"
 
@@ -319,6 +322,16 @@ def test_convert_page_has_project_history():
     assert "DELETE" in js, "缺少删除调用"
     assert "/reconvert" in js, "缺少重转调用"
     assert "/download" in js, "缺少下载调用"
+
+
+def test_convert_page_has_conversational_curation():
+    """对话修正面板要能接续上下文并展示执行结果。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert 'id="chatLog"' in html and 'id="chatInput"' in html
+    assert "appendChat" in js, "缺少对话渲染"
+    assert "applied" in js and "rejected" in js, "应展示已执行/被拒操作"
+    assert "/api/projects/" in js and "/chat" in js
 
 
 def test_convert_page_hands_off_to_player_for_png():

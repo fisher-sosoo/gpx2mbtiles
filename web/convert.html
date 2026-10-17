@@ -126,6 +126,21 @@
     <button class="secondary" id="poiBtn" style="width:50%">🧭 补充地名航点</button>
     <button class="secondary" id="poiExportBtn" style="width:50%;display:none">⬇️ 下载含地名 GPX</button>
   </div>
+
+  <div id="chatWrap" style="display:none;margin-top:14px;border-top:1px solid #2a3848;padding-top:12px">
+    <h2 style="font-size:13px">💬 对话修正</h2>
+    <div class="hint" style="margin-bottom:8px">
+      用一句话增删改地名点，比如「去掉所有湖泊」「把雪山嶂改名为主峰」「恢复全部」。
+      支持接着上一轮说。
+    </div>
+    <div id="chatLog" style="max-height:220px;overflow-y:auto;margin-bottom:8px"></div>
+    <div style="display:flex;gap:8px">
+      <input type="text" id="chatInput" placeholder="例如：只保留垭口和营地" maxlength="200"
+             style="flex:1;background:#0f1822;border:1px solid #2a3848;color:#e8eef4;
+                    border-radius:9px;padding:9px 10px;font-size:14px">
+      <button id="chatSend" style="width:auto;margin:0;padding:9px 16px">发送</button>
+    </div>
+  </div>
 </div>
 
 <div class="card" id="guideCard" style="display:none">
@@ -426,6 +441,63 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   });
 
+  // ---------- 对话修正 ----------
+  function appendChat(role, text, detail) {
+    var log = $('chatLog');
+    var row = document.createElement('div');
+    row.style.cssText = 'font-size:12.5px;line-height:1.6;margin-bottom:7px;padding:7px 9px;' +
+      'border-radius:8px;background:' + (role === 'user' ? '#203a57' : '#16202b') + ';';
+    var who = document.createElement('b');
+    who.textContent = role === 'user' ? '你' : '助手';
+    who.style.color = role === 'user' ? '#7cc0ff' : '#3ecf8e';
+    var body = document.createElement('div');
+    body.textContent = text;
+    body.style.color = '#c3d2df';
+    row.appendChild(who); row.appendChild(body);
+    if (detail) {
+      var d = document.createElement('div');
+      d.className = 'hint';
+      d.style.marginTop = '3px';
+      d.textContent = detail;
+      row.appendChild(d);
+    }
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function sendChat() {
+    if (!state.projectId) { showErr('请先转换并补充地名点'); return; }
+    var input = $('chatInput');
+    var msg = (input.value || '').trim();
+    if (!msg) return;
+    input.value = '';
+    appendChat('user', msg);
+    $('chatSend').disabled = true;
+    var fd = new FormData();
+    fd.append('message', msg);
+    apiFetch('/api/projects/' + state.projectId + '/chat', { method: 'POST', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        $('chatSend').disabled = false;
+        if (!res.ok) { appendChat('assistant', '失败：' + (res.j.detail || '')); return; }
+        var bits = [];
+        if (res.j.applied && res.j.applied.length) bits.push(res.j.applied.join('；'));
+        if (res.j.rejected && res.j.rejected.length) bits.push('未执行：' + res.j.rejected.join('；'));
+        appendChat('assistant', res.j.reply || '（无回复）', bits.join('　'));
+        renderPois({ data: { items: res.j.items } });
+        $('poiStat').textContent = '（' + res.j.count + ' 个）';
+      })
+      .catch(function (e) {
+        $('chatSend').disabled = false;
+        appendChat('assistant', '网络错误：' + e);
+      });
+  }
+
+  $('chatSend').addEventListener('click', sendChat);
+  $('chatInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
+  });
+
   // ---------- 交接给回放页出图 ----------
   // 回放页约定不调 /api，所以由本页取好 GPX，用 sessionStorage 交过去。
   $('guideMap').addEventListener('click', function () {
@@ -494,6 +566,7 @@
     });
     list.appendChild(tbl);
     $('poiExportBtn').style.display = 'inline-block';
+    $('chatWrap').style.display = 'block';
   }
 
   function pollPois() {
