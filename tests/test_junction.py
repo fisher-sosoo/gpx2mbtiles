@@ -75,6 +75,31 @@ class TestNearest:
         assert got is None and dist is None
 
 
+class TestTrackStatsTolerance:
+    """重算路径会传 (lat, lon) 元组，track_stats 必须都能吃。"""
+
+    def test_accepts_tuples(self):
+        pts = [(24.0, 113.0), (24.001, 113.0), (24.002, 113.0)]
+        st = kn.track_stats(pts)
+        assert len(st.cum) == 3
+        assert st.distance_m > 200
+
+    def test_accepts_objects(self):
+        class P:
+            def __init__(self, la, lo):
+                self.lat, self.lon = la, lo
+        pts = [P(24.0, 113.0), P(24.001, 113.0)]
+        assert kn.track_stats(pts).distance_m > 100
+
+    def test_tuples_and_objects_agree(self):
+        class P:
+            def __init__(self, la, lo):
+                self.lat, self.lon = la, lo
+        a = kn.track_stats([(24.0, 113.0), (24.002, 113.002)]).distance_m
+        b = kn.track_stats([P(24.0, 113.0), P(24.002, 113.002)]).distance_m
+        assert abs(a - b) < 0.01
+
+
 class TestApplyJunctions:
     def _names(self):
         n1 = kn.WaypointName(text="#01 a", source="position", km=0.100,

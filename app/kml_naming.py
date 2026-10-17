@@ -199,12 +199,24 @@ def pick_significant_turns(names) -> set:
     return set(keep)
 
 
+def _latlon(p):
+    """同时接受带 .lat/.lon 的对象和 (lat, lon[, ...]) 元组。
+
+    调用方有时拿到的是解析后的点对象，有时是 (lat, lon) 元组；
+    只支持前者会在「就地重算」这类路径上炸掉（实测踩过一次）。
+    """
+    if hasattr(p, "lat"):
+        return p.lat, p.lon
+    return p[0], p[1]
+
+
 def track_stats(points) -> TrackStats:
     """按相邻点累加里程。"""
     cum = [0.0]
     for i in range(1, len(points)):
-        prev, cur = points[i - 1], points[i]
-        cum.append(cum[-1] + haversine_m(prev.lat, prev.lon, cur.lat, cur.lon))
+        a_lat, a_lon = _latlon(points[i - 1])
+        b_lat, b_lon = _latlon(points[i])
+        cum.append(cum[-1] + haversine_m(a_lat, a_lon, b_lat, b_lon))
     return TrackStats(distance_m=cum[-1] if cum else 0.0, cum=cum)
 
 
