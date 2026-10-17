@@ -371,14 +371,43 @@ def test_convert_page_has_conversational_curation():
     assert "/api/projects/" in js and "/chat" in js
 
 
-def test_convert_page_hands_off_to_player_for_png():
-    """出图交给回放页：用 sessionStorage 交接，避免在转换页重造地图。"""
+def test_convert_page_exports_png_in_page():
+    """出图必须在本页完成，不再跳转到回放页。"""
     html = _read(CONVERT_PAGE)
     js = _extract_inline_js(html)
-    assert 'id="guideMap"' in html, "缺少「在地图上查看并出图」按钮"
-    assert "sessionStorage.setItem" in js, "应通过 sessionStorage 交接"
-    assert "gpx2mbtiles_handoff" in js
-    assert "/gpx/player.html" in js, "应跳转到回放页"
+    assert 'id="cmap"' in html, "缺少页面内地图容器"
+    assert "leaflet" in html.lower(), "缺少 Leaflet"
+    assert 'id="mapPng"' in html, "缺少本页导出 PNG 按钮"
+    assert "projectPt" in js and "toBlob" in js, "缺少 canvas 出图逻辑"
+    # 仍然保留交接入口作为可选项，但出图不依赖它
+    assert "/api/projects/" in js
+
+
+def test_convert_map_circles_risk_points():
+    """风险点要圈在地图上，而不是只在文字里说「4 处发卡弯」。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert "riskPoints" in js, "缺少风险点提取"
+    assert "circleMarker" in js, "风险点应用圆圈标出"
+    assert 'id="mapShowTurns"' in html, "应可切换风险圈显示"
+    assert 'id="mapShowPois"' in html, "应可切换地名点显示"
+    assert "turn_text" in js, "风险点来自转向信息"
+
+
+def test_waypoint_summary_has_coordinates():
+    """地图要画风险点，摘要必须带坐标。"""
+    from app.gpx_converter import convert
+    from tests.conftest import make_kml
+    kml = make_kml(track_times=[
+        (113.0, 24.0, 100, "2023-02-18T02:00:00Z"),
+        (113.01, 24.01, 200, "2023-02-18T02:30:00Z"),
+        (113.02, 24.02, 300, "2023-02-18T03:00:00Z")],
+        waypoints=[{"lat": 24.01, "lon": 113.01, "ele": 200,
+                    "desc_time": "2023-02-18 10:30:00"}],
+        doc_name="2023-02-18 T")
+    s = convert(kml.encode("utf-8"), "x.kml").summary.to_dict()
+    wp = s["waypoints"][0]
+    assert wp["lat"] == 24.01 and wp["lon"] == 113.01
 
 
 def test_player_picks_up_handoff_without_calling_api():

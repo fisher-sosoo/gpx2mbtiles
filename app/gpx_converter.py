@@ -288,6 +288,9 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
             "note": named.note,
             "turn": round(named.turn, 1) if named.turn is not None else None,
             "turn_text": named.turn_text,
+            # 坐标给前端在地图上圈风险点用
+            "lat": round(point.lat, 6),
+            "lon": round(point.lon, 6),
         })
         summary.name_sources[named.source] = summary.name_sources.get(named.source, 0) + 1
 
