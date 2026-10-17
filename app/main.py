@@ -17,6 +17,8 @@ from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
 from .poi_enricher import PoiQueryError, fetch_all, filter_pois
+from . import junction_finder
+from . import kml_naming
 from . import project_chat
 from . import trip_briefing
 from . import weather as weather_mod
@@ -719,6 +721,123 @@ async def get_chat(project_id: str):
         raise HTTPException(status_code=404, detail="项目不存在") from None
     return {"history": project_store.load_chat(project_id)}
 
+
+
+# ---------------------------------------------------------------- 岔路检测
+# 只查 highway 几何（实测 30~40 秒 / 约 185 KB），比地名查询便宜。
+_junction_jobs: dict = {}
+
+
+async def _run_junction_job(project_id: str, force: bool = False):
+    job = {"status": "running", "started": time.time(), "count": 0, "error": ""}
+    _junction_jobs[project_id] = job
+    try:
+        if not force:
+            cached = project_store.load_junctions(project_id)
+            if cached.get("junctions"):
+                job.update(status="done", count=len(cached["junctions"]),
+                           cached=True)
+                return
+        points = _project_track_points(project_store, project_id)
+        if not points:
+            raise junction_finder.PoiQueryError("项目里没有可用的轨迹点")
+        stats = kml_naming.track_stats(points)
+        cum = list(getattr(stats, "cum", []) or [])
+        pts3 = [(p[0], p[1], (cum[i] if i < len(cum) else None))
+                for i, p in enumerate(points)]
+
+        bbox = _bbox_of(points, settings.poi_bbox_pad_m)
+        ways = await asyncio.to_thread(junction_finder.fetch_ways, bbox, settings)
+        junctions = junction_finder.find_junctions(pts3, ways)
+
+        payload = {
+            "fetched_at": time.time(),
+            "bbox": [round(v, 6) for v in bbox],
+            "way_count": len(ways),
+            "junctions": junctions,
+        }
+        project_store.save_junctions(project_id, payload)
+
+        # 用路口信息重算转向描述，并就地刷新 GPX（航点名沿用上一次的结果）
+        refreshed = 0
+        try:
+            refreshed = await asyncio.to_thread(
+                _rebuild_with_junctions, project_id, junctions)
+        except Exception as exc:            # 重算失败不影响路网结果
+            logger.warning("junction rebuild failed: %s", exc)
+
+        job.update(status="done", count=len(junctions), refreshed=refreshed,
+                   way_count=len(ways))
+    except junction_finder.PoiQueryError as exc:
+        job.update(status="failed", error=str(exc))
+    except Exception as exc:
+        logger.exception("junction job failed")
+        job.update(status="failed", error=str(exc))
+
+
+def _rebuild_with_junctions(project_id: str, junctions: list) -> int:
+    """重新算名并写回产物。返回被升级为路口转向的个数。"""
+    meta = project_store.get(project_id)
+    ext = meta.get("ext") or ".kml"
+    src = project_store.input_path(project_id, ext)
+    if not src.is_file():
+        return 0
+    old = project_store.get(project_id)
+    old_summary = old.get("summary") or {}
+    overrides = {}
+    for i, w in enumerate(old_summary.get("waypoints") or []):
+        name = w.get("name") or ""
+        if name:
+            overrides[i] = name
+    params = meta.get("params") or {}
+    result = convert(src.read_bytes(), meta.get("source_name") or ("project" + ext),
+                     (params.get("track_name") or "").strip(),
+                     ai_names=False, settings=settings, junctions=junctions,
+                     name_overrides=overrides or None)
+    summary = result.summary.to_dict()
+    project_store.update_output(project_id, result.gpx.encode("utf-8"), summary)
+    return sum(1 for w in summary.get("waypoints") or []
+               if w.get("turn_kind") == "junction")
+
+
+@app.post("/api/projects/{project_id}/junctions",
+          dependencies=[Depends(require_api_key)])
+async def detect_junctions(project_id: str, refresh: bool = Form(False)):
+    """发起岔路检测（异步）。已有结果时直接返回缓存。"""
+    try:
+        project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    running = _junction_jobs.get(project_id)
+    if running and running.get("status") == "running":
+        return {"status": "running"}
+    force = _truthy(refresh)
+    if not force:
+        cached = project_store.load_junctions(project_id)
+        if cached.get("junctions"):
+            return {"status": "done", "count": len(cached["junctions"]),
+                    "cached": True}
+    asyncio.create_task(_run_junction_job(project_id, force))
+    return {"status": "started"}
+
+
+@app.get("/api/projects/{project_id}/junctions",
+         dependencies=[Depends(require_api_key)])
+async def get_junctions(project_id: str):
+    try:
+        project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    job = _junction_jobs.get(project_id) or {}
+    data = project_store.load_junctions(project_id)
+    return {
+        "status": job.get("status") or ("done" if data.get("junctions") else "none"),
+        "count": len(data.get("junctions") or []),
+        "way_count": data.get("way_count"),
+        "error": job.get("error") or "",
+        "refreshed": job.get("refreshed"),
+        "junctions": data.get("junctions") or [],
+    }
 
 # ---------------------------------------------------------------- 行前指南
 # 结构化部分（节点/天气/风险）由规则算出，模型只负责写成通顺分析；

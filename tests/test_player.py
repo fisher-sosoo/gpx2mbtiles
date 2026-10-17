@@ -361,6 +361,17 @@ def test_convert_panel_triggers_are_not_inside_hidden_cards():
     assert "$('poiCard').style.display = 'none'" not in js or         "showProjectPanels(false)" in js
 
 
+def test_convert_page_has_junction_detection():
+    """岔路检测入口与本页图层都要有。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert 'id="junctionBtn"' in html, "缺少岔路检测按钮"
+    assert 'id="mapShowJunctions"' in html, "岔路图层应可开关"
+    assert "/junctions" in js, "应调用岔路接口"
+    assert "junctionPoints" in js, "缺少岔路绘制"
+    assert "岔路口" in js, "应展示路口提示"
+
+
 def test_convert_page_has_conversational_curation():
     """对话修正面板要能接续上下文并展示执行结果。"""
     html = _read(CONVERT_PAGE)

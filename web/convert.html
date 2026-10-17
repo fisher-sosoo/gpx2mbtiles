@@ -147,7 +147,10 @@
   <label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:8px">
     <input type="checkbox" id="mapShowTurns" checked style="width:auto"> 显示风险圈
     <input type="checkbox" id="mapShowPois" checked style="width:auto;margin-left:10px"> 显示地名点
+    <input type="checkbox" id="mapShowJunctions" checked style="width:auto;margin-left:10px"> 显示岔路
   </label>
+  <button class="secondary" id="junctionBtn" style="margin-top:8px">🔀 检测岔路（结合路网，约 30 秒）</button>
+  <div class="hint" id="junctionHint" style="display:none"></div>
   <div class="row2" style="margin-top:8px">
     <select id="mapScale" style="flex:1">
       <option value="1">导出 1×</option>
@@ -250,7 +253,7 @@
 (function () {
   var API_KEY = localStorage.getItem('gpx2mbtiles_key') || '';
   var state = { file: null, result: null, projectId: null, guideMd: '',
-                trackPts: null, pois: [] };
+                trackPts: null, pois: [], junctions: [] };
 
   var SRC_LABEL = {
     position: '所在位置',
@@ -578,7 +581,7 @@
 
   // ---------- 页面内地图 + 出图 ----------
   // 不再跳转到回放页：本页出图，风险点直接圈在地图上。
-  var cmap = null, cLayers = { track: null, turns: null, pois: null };
+  var cmap = null, cLayers = { track: null, turns: null, pois: null, junctions: null };
   var OTM_TPL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png';
 
   function trackLatLngs() {
@@ -625,6 +628,10 @@
     return (state.pois || []).filter(function (p) { return p.lat && p.lon; });
   }
 
+  function junctionPoints() {
+    return (state.junctions || []).filter(function (j) { return j.lat && j.lon; });
+  }
+
   function drawMap() {
     var pts = trackLatLngs();
     if (!pts.length) return;
@@ -657,11 +664,21 @@
     });
     cLayers.pois = pg.addTo(cmap);
 
+    // 岔路口用紫色方框，和橙色的转向圈区分开
+    var jg = L.layerGroup();
+    junctionPoints().forEach(function (j) {
+      L.circleMarker([j.lat, j.lon], {
+        radius: 9, color: '#c07bff', weight: 2, fillColor: '#c07bff', fillOpacity: 0.15
+      }).bindTooltip('岔路口（' + (j.way_count || 2) + ' 条路交汇）',
+        { permanent: false }).addTo(jg);
+    });
+    cLayers.junctions = jg.addTo(cmap);
+
     applyMapToggles();
     cmap.fitBounds(L.latLngBounds(pts), { padding: [24, 24] });
-    var rt = riskPoints().length, pt = poiPoints().length;
-    $('mapStat').textContent = '（轨迹 ' + pts.length + ' 点 · 风险圈 ' + rt +
-      ' · 地名 ' + pt + '）';
+    var rt = riskPoints().length, pt = poiPoints().length, jt = junctionPoints().length;
+    $('mapStat').textContent = '（轨迹 ' + pts.length + ' 点 · 转向 ' + rt +
+      ' · 岔路 ' + jt + ' · 地名 ' + pt + '）';
     setTimeout(function () { cmap.invalidateSize(); }, 60);
   }
 
@@ -671,9 +688,14 @@
     else cmap.removeLayer(cLayers.turns);
     if ($('mapShowPois').checked) { if (!cmap.hasLayer(cLayers.pois)) cLayers.pois.addTo(cmap); }
     else cmap.removeLayer(cLayers.pois);
+    if (!cLayers.junctions) return;
+    if ($('mapShowJunctions').checked) {
+      if (!cmap.hasLayer(cLayers.junctions)) cLayers.junctions.addTo(cmap);
+    } else cmap.removeLayer(cLayers.junctions);
   }
 
   $('mapShowTurns').addEventListener('change', applyMapToggles);
+  $('mapShowJunctions').addEventListener('change', applyMapToggles);
   $('mapShowPois').addEventListener('change', applyMapToggles);
 
   function projectPt(lat, lng, zoom, origin) {
@@ -693,6 +715,80 @@
       img.src = url;
     });
   }
+
+  // ---------- 岔路检测 ----------
+  var junctionTimer = null;
+
+  function junctionHint(text, isErr) {
+    var el = $('junctionHint');
+    el.style.display = text ? 'block' : 'none';
+    el.textContent = text || '';
+    el.className = 'hint';
+    el.style.color = isErr ? '#ff8080' : '';
+  }
+
+  function applyJunctionResult(j) {
+    state.junctions = j.junctions || [];
+    drawMap();
+    var n = state.junctions.length;
+    var up = (state.result && state.result.summary)
+      ? (state.result.summary.waypoints || []).filter(function (w) {
+        return w.turn_kind === 'junction';
+      }).length : 0;
+    junctionHint('检测到 ' + n + ' 处岔路' +
+      (up ? ('，其中 ' + up + ' 个转向已标为「岔路口」') : ''));
+  }
+
+  function pollJunctions() {
+    if (junctionTimer) { clearTimeout(junctionTimer); junctionTimer = null; }
+    apiFetch('/api/projects/' + state.projectId + '/junctions')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.status === 'running' || j.status === 'started') {
+          junctionHint('正在检测沿线路网……');
+          junctionTimer = setTimeout(pollJunctions, 3000);
+          return;
+        }
+        $('junctionBtn').disabled = false;
+        $('junctionBtn').textContent = '🔀 重新检测岔路';
+        if (j.status === 'failed') {
+          junctionHint('检测失败：' + (j.error || '未知原因'), true);
+          return;
+        }
+        // 重算后摘要变了，重新取一次项目让航点表与转向圈同步
+        apiFetch('/api/projects/' + state.projectId)
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d && d.summary) { state.result = d; render(d); }
+            applyJunctionResult(j);
+          })
+          .catch(function () { applyJunctionResult(j); });
+      })
+      .catch(function (e) {
+        $('junctionBtn').disabled = false;
+        $('junctionBtn').textContent = '🔀 检测岔路';
+        junctionHint('轮询失败：' + e, true);
+      });
+  }
+
+  $('junctionBtn').addEventListener('click', function () {
+    if (!state.projectId) { showErr('请先转换一次'); return; }
+    clearErr();
+    var btn = $('junctionBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 检测中…';
+    junctionHint('正在检测沿线路网……');
+    var fd = new FormData();
+    fd.append('refresh', 'true');
+    apiFetch('/api/projects/' + state.projectId + '/junctions', { method: 'POST', body: fd })
+      .then(function (r) { return r.json(); })
+      .then(function () { pollJunctions(); })
+      .catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = '🔀 检测岔路';
+        junctionHint('发起失败：' + e, true);
+      });
+  });
 
   $('mapPng').addEventListener('click', function () {
     if (!cmap || !trackLatLngs().length) { showErr('请先转换并显示地图'); return; }
@@ -775,6 +871,17 @@
           });
         }
 
+        // 岔路口（紫色圈）
+        if ($('mapShowJunctions').checked) {
+          junctionPoints().forEach(function (j) {
+            var xy = projectPt(j.lat, j.lon, zoom, origin);
+            ctx.beginPath();
+            ctx.arc(xy[0], xy[1], 9, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(192,123,255,.15)'; ctx.fill();
+            ctx.strokeStyle = '#c07bff'; ctx.lineWidth = 2; ctx.stroke();
+          });
+        }
+
         // 标题 + 图例
         var s = state.result.summary;
         var title = (s.tracks && s.tracks[0] && s.tracks[0].name) || '路线';
@@ -782,6 +889,7 @@
         if (s.distance_m) sub.push((s.distance_m / 1000).toFixed(2) + ' km');
         if (riskPoints().length) sub.push('风险点 ' + riskPoints().length);
         if (poiPoints().length) sub.push('地名 ' + poiPoints().length);
+        if (junctionPoints().length) sub.push('岔路 ' + junctionPoints().length);
         ctx.fillStyle = 'rgba(14,20,27,.78)';
         ctx.fillRect(0, 0, w, 42);
         ctx.font = '700 15px sans-serif';

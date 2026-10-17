@@ -116,6 +116,7 @@ def _apply_ai_names(result: KmlResult, wp_names: list, summary: ConvertSummary,
             "ele": point.ele,
             "turn": named.turn,
             "turn_text": named.turn_text,
+            "turn_kind": named.turn_kind,
         })
     if not candidates:
         # 全部航点都已有原始名称 —— 正常情况，不算错误
@@ -151,7 +152,8 @@ def safe_filename(name: str, fallback: str = "track") -> str:
 
 
 def convert(data: bytes, filename: str = "", custom_name: str = "",
-            ai_names: bool = False, settings=None) -> ConvertResult:
+            ai_names: bool = False, settings=None, junctions=None,
+            name_overrides=None) -> ConvertResult:
     """字节流 → GPX。异常统一抛 KmlParseError。
 
     ai_names=True 且配置了密钥时，额外调一次模型给「没有名字的航点」起语义名称；
@@ -191,7 +193,15 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
             stats = naming.track_stats(chain)
             summary.degraded.append("no_track")
 
-    wp_names = naming.name_waypoints(result, locate_points, stats)
+    wp_names = naming.name_waypoints(result, locate_points, stats,
+                                     junctions=junctions)
+    # 重新算名时沿用上一次的最终航点名（例如已由 AI 命名过），避免退化
+    if name_overrides:
+        for i, named in enumerate(wp_names):
+            replacement = name_overrides.get(i)
+            if replacement:
+                named.text = replacement
+                named.source = "kept"
 
     if ai_names:
         _apply_ai_names(result, wp_names, summary, stats, settings)
@@ -288,6 +298,8 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
             "note": named.note,
             "turn": round(named.turn, 1) if named.turn is not None else None,
             "turn_text": named.turn_text,
+            "turn_kind": named.turn_kind,
+            "junction_ways": named.junction_ways,
             # 坐标给前端在地图上圈风险点用
             "lat": round(point.lat, 6),
             "lon": round(point.lon, 6),

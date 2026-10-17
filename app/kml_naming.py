@@ -34,6 +34,8 @@ class WaypointName:
     orig_name: str = ""  # 源文件里的 <name>，用于追溯
     turn: float | None = None   # 该处的转角（负左正右）
     turn_text: str = ""         # 可读转向描述
+    turn_kind: str = ""         # junction=路口转向 / terrain=地形转向
+    junction_ways: int = 0      # 该路口交汇的道路条数
 
 
 @dataclass
@@ -436,8 +438,40 @@ def _dedupe(base: str, used: set) -> str:
     return text
 
 
+def apply_junctions(names, junctions, tol_m: float = 40.0) -> int:
+    """把落在路口附近的显著转向标成「路口转向」。
+
+    按里程匹配（路口带的是沿轨迹累计距离），避免为了拿坐标去改航点数据结构。
+    返回被升级为路口转向的个数。
+    """
+    if not junctions:
+        return 0
+    upgraded = 0
+    for n in names:
+        if not n.turn_text or n.km is None:
+            continue
+        pos_m = n.km * 1000.0
+        best = None
+        best_d = None
+        for j in junctions:
+            jm = j.get("distance_m")
+            if jm is None:
+                continue
+            d = abs(jm - pos_m)
+            if best_d is None or d < best_d:
+                best, best_d = j, d
+        if best is not None and best_d is not None and best_d <= tol_m:
+            n.turn_text = "岔路口" + n.turn_text
+            n.turn_kind = "junction"
+            n.junction_ways = int(best.get("way_count") or 0)
+            upgraded += 1
+        else:
+            n.turn_kind = "terrain"
+    return upgraded
+
+
 def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
-                   pad: int = 2) -> list:
+                   pad: int = 2, junctions=None, junction_tol_m: float = 40.0) -> list:
     """给普通航点取名，返回与 result.waypoints 等长的命名结果。"""
     index = _TrackIndex(track_points, stats) if track_points else None
     out = []
@@ -493,6 +527,11 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
     for i, n in enumerate(out):
         if i not in significant:
             n.turn_text = ""
+
+    # 有路网信息时，把落在路口附近的转向升级为「路口转向」，
+    # 其余标为地形转向（提示时降权）。
+    if junctions:
+        apply_junctions(out, junctions, junction_tol_m)
     return out
 
 

@@ -116,6 +116,37 @@ class ProjectStore:
         except (OSError, ValueError):
             return None
 
+    def update_output(self, project_id: str, gpx: bytes, summary: dict) -> None:
+        """就地刷新产物（不新建项目），用于「补充路网后重算转向」这类原地增强。"""
+        d = self.project_dir(project_id)
+        (d / "output.gpx").write_bytes(gpx)
+        (d / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def junctions_path(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "junctions.json"
+
+    def load_junctions(self, project_id: str) -> dict:
+        path = self.junctions_path(project_id)
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_junctions(self, project_id: str, payload: dict) -> None:
+        self.project_dir(project_id).mkdir(parents=True, exist_ok=True)
+        self.junctions_path(project_id).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def clear_junctions(self, project_id: str) -> None:
+        try:
+            self.junctions_path(project_id).unlink()
+        except OSError:
+            pass
+
     def chat_path(self, project_id: str) -> Path:
         return self.project_dir(project_id) / "chat.json"
 
