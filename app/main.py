@@ -508,6 +508,11 @@ async def reconvert_project(project_id: str,
 
 _poi_jobs: dict = {}
 
+# Overpass 对同一来源的并发重查询会直接断连（实测：地名与岔路同时发起时，
+# 其中一个报 "Remote end closed connection without response"）。
+# 用一把全局锁把地图查询串起来，宁可慢一点也不要被掐。
+_overpass_lock = asyncio.Semaphore(1)
+
 
 def _project_track_points(store: ProjectStore, project_id: str):
     """从项目的产物 GPX 里取轨迹点（用于算包围盒与距离）。"""
@@ -545,7 +550,8 @@ async def _run_poi_job(project_id: str, force: bool = False):
         if not points:
             raise PoiQueryError("项目里没有可用的轨迹点")
         bbox = _bbox_of(points, settings.poi_bbox_pad_m)
-        nodes, ways = await asyncio.to_thread(fetch_all, bbox, settings)
+        async with _overpass_lock:
+            nodes, ways = await asyncio.to_thread(fetch_all, bbox, settings)
         result = filter_pois(nodes + ways, points, settings)
         payload = {
             "fetched_at": result.fetched_at,
@@ -728,6 +734,28 @@ async def get_chat(project_id: str):
 _junction_jobs: dict = {}
 
 
+# 跨项目复用：同一片区域不必反复打 Overpass（既慢又容易被限流）。
+# 有上限，避免长期运行把内存吃掉。
+_junction_bbox_cache: dict = {}
+_JUNCTION_CACHE_MAX = 40
+
+
+def _bbox_key(bbox) -> tuple:
+    # 约 1 公里粒度，邻近轨迹能命中同一条缓存
+    return tuple(round(v, 2) for v in bbox)
+
+
+def _junction_cache_get(bbox):
+    return _junction_bbox_cache.get(_bbox_key(bbox))
+
+
+def _junction_cache_put(bbox, junctions, way_count):
+    if len(_junction_bbox_cache) >= _JUNCTION_CACHE_MAX:
+        _junction_bbox_cache.pop(next(iter(_junction_bbox_cache)), None)
+    _junction_bbox_cache[_bbox_key(bbox)] = {
+        "junctions": junctions, "way_count": way_count}
+
+
 async def _run_junction_job(project_id: str, force: bool = False):
     job = {"status": "running", "started": time.time(), "count": 0, "error": ""}
     _junction_jobs[project_id] = job
@@ -749,19 +777,29 @@ async def _run_junction_job(project_id: str, force: bool = False):
         bbox = _bbox_of(points, settings.poi_bbox_pad_m)
         cached = project_store.load_junctions(project_id)
         degraded = ""
-        try:
-            ways = await asyncio.to_thread(junction_finder.fetch_ways,
-                                           bbox, settings)
-            junctions = junction_finder.find_junctions(pts3, ways)
-            way_count = len(ways)
-        except junction_finder.PoiQueryError as exc:
-            # 已有缓存时不要整体失败：路网是增强信息，退回上次结果继续重算转向
-            if not cached.get("junctions"):
-                raise
-            junctions = cached["junctions"]
-            way_count = cached.get("way_count") or 0
-            degraded = "沿用上次路网结果：%s" % exc
-            logger.warning("junction query failed, using cache: %s", exc)
+        shared = None if force else _junction_cache_get(bbox)
+        if shared:
+            # 同一片区域刚查过，直接用，不再打 Overpass
+            junctions = shared["junctions"]
+            way_count = shared["way_count"]
+            degraded = "复用同一区域最近一次路网结果"
+            logger.info("junction cache hit for %s", _bbox_key(bbox))
+        else:
+            try:
+                async with _overpass_lock:
+                    ways = await asyncio.to_thread(junction_finder.fetch_ways,
+                                                   bbox, settings)
+                junctions = junction_finder.find_junctions(pts3, ways)
+                way_count = len(ways)
+                _junction_cache_put(bbox, junctions, way_count)
+            except junction_finder.PoiQueryError as exc:
+                # 路网是增强信息：本项目有旧结果就用旧的，否则才整体失败
+                if not cached.get("junctions"):
+                    raise
+                junctions = cached["junctions"]
+                way_count = cached.get("way_count") or 0
+                degraded = "沿用上次路网结果：%s" % exc
+                logger.warning("junction query failed, using cache: %s", exc)
 
         payload = {
             "fetched_at": time.time(),

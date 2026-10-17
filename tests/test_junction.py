@@ -75,6 +75,42 @@ class TestNearest:
         assert got is None and dist is None
 
 
+class TestQuerySerialization:
+    """Overpass 会掐断并发重查询，必须有全局串行锁与跨项目缓存。"""
+
+    def test_overpass_lock_exists(self):
+        from app import main as m
+        assert hasattr(m, "_overpass_lock"), "缺少 Overpass 串行锁"
+
+    def test_lock_is_single_permit(self):
+        from app import main as m
+        assert getattr(m._overpass_lock, "_value", 1) == 1
+
+    def test_bbox_cache_rounds_to_neighbourhood(self):
+        from app import main as m
+        a = m._bbox_key((24.3571, 113.6112, 24.3860, 113.6470))
+        b = m._bbox_key((24.3574, 113.6119, 24.3863, 113.6478))
+        assert a == b, "邻近轨迹应命中同一条缓存"
+
+    def test_bbox_cache_is_bounded(self):
+        from app import main as m
+        m._junction_bbox_cache.clear()
+        for i in range(m._JUNCTION_CACHE_MAX + 10):
+            m._junction_cache_put((20 + i, 100, 21 + i, 101), [], 0)
+        assert len(m._junction_bbox_cache) <= m._JUNCTION_CACHE_MAX
+        m._junction_bbox_cache.clear()
+
+    def test_cache_put_get(self):
+        from app import main as m
+        m._junction_bbox_cache.clear()
+        js = [{"lat": 24.0, "lon": 113.0, "way_count": 3, "distance_m": 10.0}]
+        m._junction_cache_put((24.0, 113.0, 24.1, 113.1), js, 5)
+        got = m._junction_cache_get((24.0, 113.0, 24.1, 113.1))
+        assert got and got["way_count"] == 5
+        assert got["junctions"] == js
+        m._junction_bbox_cache.clear()
+
+
 class TestTrackStatsTolerance:
     """重算路径会传 (lat, lon) 元组，track_stats 必须都能吃。"""
 

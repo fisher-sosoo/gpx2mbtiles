@@ -49,7 +49,8 @@ def fetch_ways(bbox, settings) -> list:
     query = build_query(bbox, 90)
     proxies = _proxy_candidates(settings) or [""]
     retries = getattr(settings, "poi_retry_max", 2)
-    delays = (2.0, 6.0, 15.0)
+    # 连接被断（Overpass 限流/过载）需要更长的冷却，2s 往往还没恢复
+    delays = (5.0, 15.0, 30.0)
     timeout_s = getattr(settings, "poi_timeout_seconds", 180)
     last = "查询失败"
     for attempt in range(retries + 1):
