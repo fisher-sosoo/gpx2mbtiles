@@ -85,17 +85,28 @@ def haversine_m(a_lat, a_lon, b_lat, b_lon) -> float:
 def build_query(bbox, timeout_s: int) -> str:
     s, w, n, e = bbox
     box = f"{s:.6f},{w:.6f},{n:.6f},{e:.6f}"
+    # 只用 out tags：节点本身带坐标，不需要几何。
+    # 之前统一用 out geom，把水域面的全部顶点也拉了回来，实测查询从 42 秒涨到 2 分钟以上。
     return (
         f"[out:json][timeout:{timeout_s}];\n(\n"
         f'  node["natural"="saddle"]({box});\n'
         f'  node["mountain_pass"="yes"]({box});\n'
         f'  node["natural"="peak"]["name"]({box});\n'
         f'  node["natural"="water"]["name"]({box});\n'
-        f'  way["natural"="water"]["name"]({box});\n'
         f'  node["tourism"~"^(camp_site|alpine_hut|wilderness_hut)$"]({box});\n'
         f'  node["amenity"="shelter"]({box});\n'
         f'  node["tourism"="viewpoint"]["name"]({box});\n'
         f'  node["place"~"^(town|village|hamlet|isolated_dwelling)$"]({box});\n'
+        ");\nout tags;"
+    )
+
+
+def build_ways_query(bbox, timeout_s: int) -> str:
+    """河流与水域面需要几何才能判过河，单独发一次（可失败、可跳过）。"""
+    s, w, n, e = bbox
+    box = f"{s:.6f},{w:.6f},{n:.6f},{e:.6f}"
+    return (
+        f"[out:json][timeout:{timeout_s}];\n(\n"
         f'  way["waterway"~"^(river|stream)$"]["name"]({box});\n'
         ");\nout geom tags;"
     )
@@ -117,6 +128,26 @@ def _query_once(query: str, settings, timeout_s: int, proxy: str) -> list:
     return payload.get("elements", []) or []
 
 
+def _proxy_candidates(settings) -> list:
+    """代理候选列表：mihomo 有 7890/7891/7893 三个口，一个挂了就换一个。
+
+    实测过：7891 曾经直接拒连而 7890/7893 正常，所以单点配置不够鲁棒。
+    显式配置的优先，其余用同主机的常见端口兜底。
+    """
+    configured = (getattr(settings, "poi_proxy", "")
+                  or getattr(settings, "tile_proxy", "")).strip()
+    out = []
+    if configured:
+        out.append(configured)
+        base = configured.rsplit(":", 1)[0] if ":" in configured else ""
+        if base and base.startswith("http"):
+            for port in (7890, 7893, 7891):
+                cand = "%s:%d" % (base, port)
+                if cand not in out:
+                    out.append(cand)
+    return out
+
+
 def fetch_overpass(bbox, settings, timeout_s: int = 180) -> list:
     """同步查询（放到线程里跑，避免堵事件循环）。
 
@@ -124,12 +155,15 @@ def fetch_overpass(bbox, settings, timeout_s: int = 180) -> list:
     实测开发期反复查询后经常返回 502，隔几秒重试通常就好了。
     所以对 5xx 与网络错误做退避重试；4xx 是查询本身有问题，不重试。
     """
-    query = build_query(bbox, timeout_s=120)
-    proxy = getattr(settings, "poi_proxy", "") or getattr(settings, "tile_proxy", "")
+    query = build_query(bbox, timeout_s=90)
+    proxies = _proxy_candidates(settings) or [""]
     retries = getattr(settings, "poi_retry_max", 2)
     delays = (2.0, 6.0, 15.0)
     last = ""
+    attempt = 0
     for attempt in range(retries + 1):
+        # 每次重试都换一个代理 —— 代理挂掉和上游过载是不同的故障，都得自愈
+        proxy = proxies[attempt % len(proxies)]
         try:
             return _query_once(query, settings, timeout_s, proxy)
         except urllib.error.HTTPError as exc:
@@ -142,8 +176,8 @@ def fetch_overpass(bbox, settings, timeout_s: int = 180) -> list:
             last = "响应不是合法 JSON：%s" % exc
         if attempt < retries:
             wait = delays[attempt] if attempt < len(delays) else delays[-1]
-            logger.warning("poi query attempt %d failed (%s), retrying in %.0fs",
-                           attempt + 1, last, wait)
+            logger.warning("poi query attempt %d via %s failed (%s), retrying in %.0fs",
+                           attempt + 1, proxy or "direct", last, wait)
             time.sleep(wait)
     raise PoiQueryError(last + "（已重试 %d 次，公共查询服务可能过载，请稍后再试）"
                         % retries)
@@ -151,6 +185,28 @@ def fetch_overpass(bbox, settings, timeout_s: int = 180) -> list:
 
 class PoiQueryError(RuntimeError):
     """地名查询失败。"""
+
+
+def fetch_all(bbox, settings) -> tuple:
+    """分层取数：节点必须成功，河流几何尽力而为。
+
+    实测河流/水域的几何查询是长尾（水域面顶点多），把它和主查询放一起会让
+    整个补点从 40 秒涨到 2 分钟以上。拆开后主流程稳定，过河点丢了只是少一类。
+    """
+    nodes = fetch_overpass(bbox, settings,
+                           getattr(settings, "poi_timeout_seconds", 180))
+    ways = []
+    try:
+        q = build_ways_query(bbox, 60)
+        proxies = _proxy_candidates(settings) or [""]
+        ways = _query_once(q, settings, 90, proxies[0])
+    except urllib.error.HTTPError as exc:
+        logger.warning("river geometry skipped: upstream %s", exc.code)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.warning("river geometry skipped: %s", exc)
+    except json.JSONDecodeError:
+        logger.warning("river geometry skipped: bad json")
+    return nodes, ways
 
 
 # ---------------------------------------------------------------- 几何工具

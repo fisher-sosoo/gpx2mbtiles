@@ -56,6 +56,23 @@
   .src.note { background:#3a2a1d; color:var(--warn); }
   .summary-line { font-size:12.5px; color:var(--muted); line-height:1.6; margin-bottom:8px; }
   .warn-line { color:var(--warn); font-size:12.5px; margin-top:8px; line-height:1.6; }
+  .mdview { background:#0f1822; border:1px solid #2a3848; border-radius:10px;
+            padding:12px 14px; font-size:13px; line-height:1.75; color:#c3d2df;
+            max-height:560px; overflow:auto; }
+  .mdview h1 { font-size:16px; margin:0 0 8px; color:#fff; }
+  .mdview h2 { font-size:13.5px; margin:14px 0 6px; color:#9fc2e8;
+               border-bottom:1px solid #24313f; padding-bottom:4px; }
+  .mdview p { margin:6px 0; }
+  .mdview ul { margin:6px 0 6px 18px; padding:0; }
+  .mdview li { margin:3px 0; }
+  .mdview table { width:100%; border-collapse:collapse; margin:8px 0; font-size:12.5px; }
+  .mdview th { text-align:left; color:#8aa0b4; padding:5px 6px;
+               border-bottom:1px solid #2a3848; }
+  .mdview td { padding:5px 6px; border-bottom:1px solid #212d3a;
+               font-variant-numeric:tabular-nums; }
+  .mdview strong { color:#e8eef4; }
+  .mdview blockquote { margin:8px 0; padding:6px 10px; border-left:3px solid #5b2a2a;
+                       background:#2b1a1a; color:#ffb4b4; border-radius:0 6px 6px 0; }
   .hist-item { border:1px solid var(--line); border-radius:10px; padding:10px 11px;
                margin-bottom:8px; background:#0f1822; }
   .hist-item.cur { border-color:var(--accent); }
@@ -153,15 +170,18 @@
     <div><label>出发日期</label><input type="date" id="guideStart"></div>
     <div><label>结束日期 <span class="hint">（单日可留空）</span></label><input type="date" id="guideEnd"></div>
   </div>
+  <label>补充信息 <span class="hint">（可选，会带给 AI 一起分析）</span></label>
+  <textarea id="guideCtx" rows="2" maxlength="600" placeholder="例如：10 点前到登山口；商团轻装，有马帮；第四天必须下撤"
+    style="width:100%;background:#0f1822;border:1px solid #2a3848;color:#e8eef4;
+           border-radius:9px;padding:9px 10px;font-size:14px;resize:vertical;
+           font-family:inherit"></textarea>
   <label style="display:flex;align-items:center;gap:8px;margin-top:10px">
     <input type="checkbox" id="guideAi" checked style="width:auto">
     <span>用 AI 写风险分析 <span class="hint">（不勾选也能生成基础版）</span></span>
   </label>
   <button id="guideBtn">📋 生成行前指南</button>
   <div id="guideOut" style="display:none;margin-top:12px">
-    <pre id="guideMd" style="white-space:pre-wrap;word-break:break-word;background:#0f1822;
-         border:1px solid #2a3848;border-radius:10px;padding:12px;font-size:12.5px;
-         line-height:1.7;color:#c3d2df;max-height:520px;overflow:auto;margin:0"></pre>
+    <div id="guideMd" class="mdview"></div>
     <div class="row2" style="margin-top:10px">
       <button class="secondary" id="guideCopy" style="width:50%">复制文本</button>
       <button class="secondary" id="guideDl" style="width:50%">下载 Markdown</button>
@@ -204,7 +224,7 @@
 <script>
 (function () {
   var API_KEY = localStorage.getItem('gpx2mbtiles_key') || '';
-  var state = { file: null, result: null, projectId: null };
+  var state = { file: null, result: null, projectId: null, guideMd: '' };
 
   var SRC_LABEL = {
     position: '所在位置',
@@ -319,8 +339,10 @@
     $('guideCard').style.display = disp;
     if (!hasProject) return;
     $('poiExportBtn').style.display = 'none';
-    $('chatWrap').style.display = 'none';
     $('guideOut').style.display = 'none';
+    // 对话入口常驻：没有地名点时给提示，而不是把入口藏起来
+    $('chatWrap').style.display = 'block';
+    setChatEnabled(false);
   }
 
   function render(res) {
@@ -393,10 +415,69 @@
   }
 
   // ---------- 行前指南 ----------
+  // 迷你 Markdown 渲染：只覆盖本页会产出的语法（标题/表格/列表/加粗/引用）。
+  // 先整体转义再按行解析，杜绝注入。
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function inlineMd(s) {
+    return s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+  function renderMd(md) {
+    var lines = String(md || '').split('\n');
+    var out = [], i = 0;
+    function cells(row) {
+      return row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|')
+        .map(function (c) { return inlineMd(c.trim()); });
+    }
+    while (i < lines.length) {
+      var line = lines[i];
+      var t = escapeHtml(line);
+      if (!t.trim()) { i++; continue; }
+      if (/^#\s/.test(line)) { out.push('<h1>' + inlineMd(escapeHtml(line.slice(2))) + '</h1>'); i++; continue; }
+      if (/^##\s/.test(line)) { out.push('<h2>' + inlineMd(escapeHtml(line.slice(3))) + '</h2>'); i++; continue; }
+      if (/^>\s?/.test(line)) {
+        out.push('<blockquote>' + inlineMd(escapeHtml(line.replace(/^>\s?/, ''))) + '</blockquote>');
+        i++; continue;
+      }
+      if (/^\s*\|/.test(line)) {
+        var tbl = [];
+        while (i < lines.length && /^\s*\|/.test(lines[i])) { tbl.push(lines[i]); i++; }
+        var html = '<table>';
+        var body = tbl.slice(2);            // 第二行是分隔行
+        html += '<thead><tr>' + cells(tbl[0]).map(function (c) {
+          return '<th>' + c + '</th>';
+        }).join('') + '</tr></thead><tbody>';
+        body.forEach(function (row) {
+          html += '<tr>' + cells(row).map(function (c) {
+            return '<td>' + c + '</td>';
+          }).join('') + '</tr>';
+        });
+        out.push(html + '</tbody></table>');
+        continue;
+      }
+      if (/^\s*-\s/.test(line)) {
+        var items = [];
+        while (i < lines.length && /^\s*-\s/.test(lines[i])) {
+          items.push('<li>' + inlineMd(escapeHtml(lines[i].replace(/^\s*-\s/, ''))) + '</li>');
+          i++;
+        }
+        out.push('<ul>' + items.join('') + '</ul>');
+        continue;
+      }
+      out.push('<p>' + inlineMd(t) + '</p>');
+      i++;
+    }
+    return out.join('');
+  }
+
   function renderGuide(g) {
     $('guideCard').style.display = 'block';
     $('guideOut').style.display = 'block';
-    $('guideMd').textContent = g.markdown || '(空)';
+    state.guideMd = g.markdown || '';
+    $('guideMd').innerHTML = renderMd(g.markdown || '(空)');
     var bits = [];
     if (g.range) bits.push(g.range);
     if (g.ai_narrative) bits.push('含 AI 分析');
@@ -416,6 +497,7 @@
     fd.append('start_date', $('guideStart').value || '');
     fd.append('end_date', $('guideEnd').value || '');
     fd.append('use_ai', $('guideAi').checked ? 'true' : 'false');
+    fd.append('context', ($('guideCtx').value || '').trim());
     apiFetch('/api/projects/' + state.projectId + '/guide', { method: 'POST', body: fd })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
@@ -433,7 +515,7 @@
   });
 
   $('guideCopy').addEventListener('click', function () {
-    var text = $('guideMd').textContent || '';
+    var text = state.guideMd || '';
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(function () {
         $('guideCopy').textContent = '已复制';
@@ -443,7 +525,7 @@
   });
 
   $('guideDl').addEventListener('click', function () {
-    var text = $('guideMd').textContent || '';
+    var text = state.guideMd || '';
     var blob = new Blob([text], { type: 'text/markdown' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -454,6 +536,14 @@
   });
 
   // ---------- 对话修正 ----------
+  function setChatEnabled(on) {
+    var input = $('chatInput');
+    var btn = $('chatSend');
+    input.disabled = !on;
+    btn.disabled = !on;
+    input.placeholder = on ? '例如：只保留垭口和营地' : '请先点上面的「补充地名航点」';
+  }
+
   function appendChat(role, text, detail) {
     var log = $('chatLog');
     var row = document.createElement('div');
@@ -552,6 +642,8 @@
     list.innerHTML = '';
     if (!items.length) {
       list.innerHTML = '<div class="hint">' + (j.error ? ('查询失败：' + j.error) : '没有找到符合条件的地名点') + '</div>';
+      $('chatWrap').style.display = 'block';
+      setChatEnabled(false);
       return;
     }
     var extra = [];
@@ -579,6 +671,7 @@
     list.appendChild(tbl);
     $('poiExportBtn').style.display = 'inline-block';
     $('chatWrap').style.display = 'block';
+    setChatEnabled(items.length > 0);
   }
 
   function pollPois() {

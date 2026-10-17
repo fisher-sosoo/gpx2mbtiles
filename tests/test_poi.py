@@ -2,7 +2,8 @@
 import pytest
 
 from app.poi_enricher import (_crosses, _element_point, _point_seg_side,
-                              _river_crossings, build_query, filter_pois)
+                              _river_crossings, build_query, build_ways_query,
+                              filter_pois)
 
 
 def _node(lat, lon, tags):
@@ -24,14 +25,21 @@ def _track_north(n=60, lat0=24.0, lon=113.0, step=0.0002):
 
 
 class TestQuery:
-    def test_build_query_covers_key_types(self):
+    def test_node_query_covers_key_types(self):
+        """主查询只取节点：坐标自带，不需要几何，这是速度的关键。"""
         q = build_query((28.28, 100.29, 28.46, 100.57), 120)
         for needle in ('natural"="saddle', "mountain_pass", 'natural"="peak',
-                       'natural"="water', "camp_site", "shelter",
-                       'place"~', "waterway"):
-            assert needle in q, f"查询缺少: {needle}"
+                       'natural"="water', "camp_site", "shelter", 'place"~'):
+            assert needle in q, f"节点查询缺少: {needle}"
         assert "28.280000,100.290000,28.460000,100.570000" in q
-        assert "out geom tags" in q
+        assert "out tags" in q
+        assert "out geom" not in q, "主查询不该再拉几何（会慢一个数量级）"
+
+    def test_ways_query_only_for_rivers(self):
+        q = build_ways_query((28.28, 100.29, 28.46, 100.57), 60)
+        assert "waterway" in q
+        assert "out geom tags" in q, "河流要几何才能判过河"
+        assert "peak" not in q, "河流查询不该夹带其它要素"
 
 
 class TestOverpassRetry:

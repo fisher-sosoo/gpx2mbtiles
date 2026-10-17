@@ -114,11 +114,22 @@ def build_mistakes(summary: dict, pois: list, waypoints: list) -> list:
     turns = [w for w in (waypoints or []) if w.get("turn_text")
              and w["turn_text"] != "直行"]
     if turns:
-        hairpins = [t for t in turns if "发卡" in t["turn_text"]]
+        # 给出里程位置，否则「4 处发卡弯」这种说法用户根本不知道在哪
+        spots = []
+        for t in turns[:6]:
+            km = t.get("km")
+            label = t.get("turn_text") or ""
+            if km is None:
+                spots.append(label)
+            else:
+                spots.append("%.1fkm %s" % (km, label))
+        detail = "、".join(s for s in spots if s)
+        hairpins = [t for t in turns if "发卡" in (t.get("turn_text") or "")]
         if hairpins:
-            tips.append("有 %d 处发卡弯/折返，注意沿主路走、别顺岔路下沟。" % len(hairpins))
+            tips.append("折返/发卡弯 %d 处（%s），容易顺岔路下沟，注意沿主路走。"
+                        % (len(hairpins), detail))
         else:
-            tips.append("有 %d 处明显转向，岔路口注意辨认方向。" % len(turns))
+            tips.append("明显转向 %d 处（%s），岔路口注意辨认方向。" % (len(turns), detail))
 
     camps = [p for p in (pois or []) if p.get("kind") in
              ("camp_site", "alpine_hut", "wilderness_hut", "shelter")]
@@ -250,19 +261,28 @@ AI_SYSTEM = (
 )
 
 AI_TEMPLATE = (
-    "根据下面的真实数据，写一段 300 字以内的行前风险分析。\n"
-    "要求：指出最需要注意的 2-3 件事，说明原因，给出可执行建议"
-    "（出发时间、装备、撤返判断）。不要重复表格里已有的信息。\n\n"
+    "根据下面的真实数据，写一段 300 字以内的行前风险分析。\n\n"
     "路线：{overview}\n"
     "关键节点：{key_points}\n"
     "天气：{weather}\n"
     "已识别风险：{risks}\n"
     "易错点：{mistakes}\n"
-    "只输出分析正文，不要标题。"
+    "用户补充：{context}\n\n"
+    "硬性要求（务必遵守）：\n"
+    "1. 只针对这条路线说话。禁止出现「导入手机」「保持离线可用」「提前下载轨迹」"
+    "这类放之四海皆准的套话。\n"
+    "2. 装备只在与天气/地形直接相关时才提。禁止罗列徒步鞋、登山杖、头灯、"
+    "冲锋衣这种默认人人都带的东西。\n"
+    "3. 只有在下列情况才提装备：降雪/结冰 -> 冰爪或防滑；降雨明显 -> 防水层与备换衣物；"
+    "大风或高海拔低温 -> 防风保暖与失温防护；需要手脚并用的攀爬/碎石坡 -> 手套。\n"
+    "4. 提到的每一个位置都必须能对应上面的关键节点，不要编造地名。\n"
+    "5. 指出最需要注意的 2-3 件事，说明原因与可执行的判断依据"
+    "（时间窗、撤返条件、绕行方式）。\n\n"
+    "只输出分析正文，不要标题，不要复述表格内容。"
 )
 
 
-def make_ai_prompt(brief: dict) -> str:
+def make_ai_prompt(brief: dict, context: str = "") -> str:
     kps = brief.get("key_points") or []
     kp_text = "；".join("%.1fkm %s(%s)" % (p.get("km") or 0, p.get("name") or "",
                                           p.get("type_label") or "") for p in kps[:12])
@@ -276,4 +296,5 @@ def make_ai_prompt(brief: dict) -> str:
         weather=w_text or "无预报",
         risks="；".join(brief.get("risks") or []) or "无",
         mistakes="；".join(brief.get("mistakes") or []) or "无",
+        context=(context or "").strip()[:600] or "无",
     )

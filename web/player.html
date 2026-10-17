@@ -934,7 +934,7 @@
     if (!any) alert('没有可用的轨迹');
   }
 
-  function buildWaypoints() {
+  function buildWaypoints(silent) {
     clearToolLayers();
     var any = false;
     state.tracks.forEach(function (t) {
@@ -945,7 +945,10 @@
                            showLabel: true });
       });
     });
-    if (!any) { alert('已导入的文件里没有路径点（KML Placemark / GPX wpt）'); return; }
+    if (!any) {
+      if (!silent) alert('已导入的文件里没有路径点（KML Placemark / GPX wpt）');
+      return;
+    }
     renderMarks(); renderMarkList();
   }
 
@@ -1233,6 +1236,14 @@
     }
     state.tracks.forEach(renderTrack);
     renderTrackList();
+    // 导入的 GPX 里如果带 wpt（比如转换页补的地名点），自动画出来。
+    // 以前必须手动点「KML 路径点」按钮，GPX 用户根本不知道要这么做。
+    var wptCount = 0;
+    state.tracks.forEach(function (t) { wptCount += (t.waypoints || []).length; });
+    if (wptCount) {
+      buildWaypoints(true);
+      msgs.push('已自动标出 ' + wptCount + ' 个路径点');
+    }
     if (total) fitAll();
     save();
     document.getElementById('saveHint').textContent = msgs.join('　');

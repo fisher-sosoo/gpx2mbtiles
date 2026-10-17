@@ -16,7 +16,7 @@ from .gpx_converter import convert
 from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
-from .poi_enricher import PoiQueryError, fetch_overpass, filter_pois
+from .poi_enricher import PoiQueryError, fetch_all, filter_pois
 from . import project_chat
 from . import trip_briefing
 from . import weather as weather_mod
@@ -543,9 +543,8 @@ async def _run_poi_job(project_id: str, force: bool = False):
         if not points:
             raise PoiQueryError("项目里没有可用的轨迹点")
         bbox = _bbox_of(points, settings.poi_bbox_pad_m)
-        elements = await asyncio.to_thread(
-            fetch_overpass, bbox, settings, settings.poi_timeout_seconds)
-        result = filter_pois(elements, points, settings)
+        nodes, ways = await asyncio.to_thread(fetch_all, bbox, settings)
+        result = filter_pois(nodes + ways, points, settings)
         payload = {
             "fetched_at": result.fetched_at,
             "bbox": [round(v, 6) for v in bbox],
@@ -727,7 +726,8 @@ async def get_chat(project_id: str):
 
 @app.post("/api/projects/{project_id}/guide", dependencies=[Depends(require_api_key)])
 async def build_guide(project_id: str, start_date: str = Form(""),
-                      end_date: str = Form(""), use_ai: bool = Form(True)):
+                      end_date: str = Form(""), use_ai: bool = Form(True),
+                      context: str = Form("")):
     """生成行前指南（同步：天气 2~3 秒，模型 2~4 秒）。"""
     try:
         meta = project_store.get(project_id)
@@ -778,12 +778,13 @@ async def build_guide(project_id: str, start_date: str = Form(""),
             brief["ai_error"] = "未配置 AI_API_KEY"
         else:
             try:
-                prompt = trip_briefing.make_ai_prompt(brief)
+                prompt = trip_briefing.make_ai_prompt(brief, context)
                 brief["ai_narrative"] = await asyncio.to_thread(
                     ai_naming.chat, prompt, settings, trip_briefing.AI_SYSTEM)
             except Exception as exc:
                 brief["ai_error"] = str(exc)[:200]
 
+    brief["user_context"] = (context or "").strip()[:600]
     brief["markdown"] = trip_briefing.render_markdown(brief)
     project_store.save_guide(project_id, brief)
     return brief
