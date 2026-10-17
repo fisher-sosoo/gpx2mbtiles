@@ -2,6 +2,7 @@ import asyncio
 import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -144,6 +145,67 @@ def make_gpx(points, name="test-track"):
 <gpx version="1.1" creator="pytest" xmlns="http://www.topografix.com/GPX/1/1">
   <trk><name>{name}</name><trkseg>{trkpts}</trkseg></trk>
 </gpx>'''
+
+
+# ---------------------------------------------------------------- KML 样例
+
+SAMPLE_KML = Path(__file__).resolve().parent.parent / "samples" / (
+    "2023-02-18 英德雪山嶂环线.kml")
+
+
+def sample_kml_bytes() -> bytes:
+    """用户提供的真实两步路 KML（33 个点位：1 条轨迹 + 起终点 + 30 个标注点）。"""
+    if not SAMPLE_KML.is_file():
+        pytest.skip(f"缺少样例文件 {SAMPLE_KML}")
+    return SAMPLE_KML.read_bytes()
+
+
+def make_kml(track_times=None, waypoints=None, doc_name="test-doc",
+             sport="爬山") -> str:
+    """构造一份最小两步路风格 KML。
+
+    track_times: [(lon, lat, ele, "2023-02-18T02:00:00Z"), ...]
+    waypoints:   [{"lat":.., "lon":.., "ele":.., "desc_time":"2023-02-18 10:00:00",
+                   "name":"", "note":"", "file_id":"123"}]
+    """
+    coords = "".join(
+        f"<gx:coord>{lon} {lat} {ele}</gx:coord>" for lon, lat, ele, _ in track_times)
+    whens = "".join(f"<when>{t}</when>" for _, _, _, t in track_times)
+    pms = []
+    for w in waypoints or []:
+        desc = f"时间：{w['desc_time']}" if w.get("desc_time") else ""
+        name_el = f"<name><![CDATA[{w['name']}]]></name>" if w.get("name") else ""
+        ed = ""
+        # 时间一律给毫秒 epoch，缺失时留空
+        epoch = w.get("epoch", "")
+        ed = (
+            "<ExtendedData>"
+            f'<Data name="Latitude"><value>{w["lat"]}</value></Data>'
+            f'<Data name="Longtitude"><value>{w["lon"]}</value></Data>'
+            f'<Data name="Altitude"><value>{w["ele"]}</value></Data>'
+            f'<Data name="Time"><value>{epoch}</value></Data>'
+            f'<Data name="description"><value><![CDATA[{w.get("note", "")}]]></value></Data>'
+            f'<Data name="FileId"><value>{w.get("file_id", "")}</value></Data>'
+            "</ExtendedData>")
+        pms.append(
+            f'<Placemark id="realPoint">{name_el}'
+            f"<description><![CDATA[<div>{desc}</div>]]></description>"
+            f"{ed}"
+            f"<Point><coordinates>{w['lon']},{w['lat']},{w['ele']}</coordinates></Point>"
+            "</Placemark>")
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<kml xmlns="http://www.opengis.net/kml/2.2" '
+        'xmlns:gx="http://www.google.com/kml/ext/2.2"><Document>'
+        f"<name><![CDATA[{doc_name}]]></name>"
+        "<ExtendedData>"
+        f'<Data name="SportTypeName"><value><![CDATA[{sport}]]></value></Data>'
+        "</ExtendedData>"
+        '<Folder id="TbuluHisPointFolder">' + "".join(pms) + "</Folder>"
+        '<Folder id="TbuluTrackFolder"><Placemark>'
+        "<name><![CDATA[轨迹片段1]]></name><gx:Track>"
+        f"{whens}{coords}</gx:Track></Placemark></Folder>"
+        "</Document></kml>")
 
 
 def wait_task_done(manager, task_id, timeout=30.0):

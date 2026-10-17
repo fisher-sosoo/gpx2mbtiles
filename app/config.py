@@ -26,6 +26,28 @@ def _env_float(name: str, default: float, lo=None, hi=None) -> float:
     return v
 
 
+def _read_key_file(explicit_path: str = "") -> str:
+    """读本机未入库的 apikey 文件。
+
+    优先用 AI_API_KEY_FILE 指定的路径，否则找仓库根目录的 apikey。
+    只是为了本地开发方便；线上用环境变量。文件不存在就当作没配。
+    """
+    candidates = []
+    if explicit_path:
+        candidates.append(explicit_path)
+    candidates.append(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "apikey"))
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                value = fh.read().strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return ""
+
+
 DEFAULT_IPHONE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -85,6 +107,19 @@ class Settings:
         self.buffer_min = _env_float("BUFFER_MIN_METERS", 0.0, 0.0, 100000.0)
         self.buffer_max = _env_float("BUFFER_MAX_METERS", 10000.0, 0.0, 200000.0)
         self.max_gpx_bytes = _env_int("MAX_GPX_BYTES", 52428800, 1024, 1073741824)
+        # KML → GPX 转换：输入上限比生成器更紧（转换是同步请求，大文件会拖住 worker）
+        self.max_convert_bytes = _env_int("MAX_CONVERT_BYTES", 10485760, 1024, 104857600)
+
+        # ---- AI 辅助命名（可选，默认关闭）----
+        # 只有请求显式开启 ai_names 且配置了密钥才调用；失败自动回退规则命名。
+        # 密钥来源：环境变量 AI_API_KEY，或仓库根目录下一个未入库的 apikey 文件。
+        # 绝不硬编码，也绝不写进日志与响应。
+        self.ai_api_key = (os.getenv("AI_API_KEY", "").strip()
+                           or _read_key_file(os.getenv("AI_API_KEY_FILE", "")))
+        self.ai_base_url = os.getenv("AI_BASE_URL", "https://api.deepseek.com").strip()
+        self.ai_model = os.getenv("AI_MODEL", "deepseek-chat").strip()
+        self.ai_timeout_seconds = _env_float("AI_TIMEOUT_SECONDS", 30.0, 3.0, 180.0)
+        self.ai_max_tokens = _env_int("AI_MAX_TOKENS", 2000, 200, 8192)
         # 低于此剩余空间时停止写缓存（默认 3GB；8G 缓存 + 3G 余量，40G 盘安全）
         self.disk_min_free_bytes = _env_int(
             "DISK_MIN_FREE_BYTES", 3221225472, 104857600, 1099511627776)

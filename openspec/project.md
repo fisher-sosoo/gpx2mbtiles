@@ -4,11 +4,14 @@
 
 `gpx2mbtiles` 是个人自用的 GPX 工具集，由两部分组成：
 
-1. **离线地图生成**（服务端）：上传 GPX 轨迹 → 计算缓冲区内的瓦片清单 →
+1. **离线地图生成**（服务端）：上传 GPX（或 KML/KMZ）→ 计算缓冲区内的瓦片清单 →
    并发下载 → 打包成 GeoPackage(.gpkg) 或 MBTiles(.mbtiles) →
    导入 Avenza Maps / Guru Maps 做离线导航。**行前准备用。**
 2. **轨迹回放与分析**（纯前端）：PC 端叠加多条 GPX/KML/KMZ、配色、标注、出图。
    **行程结束后做分析分享用。**
+3. **KML → GPX 命名转换**（服务端）：两步路等 App 导出的 KML 丢掉名称后，
+   按「已走里程 + 累计耗时」重命名航点、按「地点 + 日期 + 类型」重命名轨迹，
+   可选 AI 推测命名。**导入只认 GPX 的 App 前用。**
 
 ## 运行环境
 
@@ -43,9 +46,15 @@ app/
   mbtiles_builder.py  MBTiles 1.0 写入（含 TMS 行号翻转）
   tile_downloader.py  并发下载 / 限流 / 重试 / 封禁检测
   tile_cache.py       瓦片代理的磁盘缓存（LRU 淘汰）
+  kml_processor.py    KML/KMZ → 中间结构（轨迹/航点/扩展字段）
+  kml_naming.py       命名规则：沿轨迹里程/耗时、轨迹名、去重
+  gpx_writer.py       GPX 1.1 输出
+  gpx_converter.py    转换流程编排（解析→定位→命名→输出）
+  ai_naming.py        可选的 AI 推测命名（调用失败自动回退）
   task_manager.py     任务账本（SQLite）/ 生命周期 / 清理
 web/
   index.html          生成器页（手机端）→ 由 Caddy 反代到 /gpx/
+  convert.html        KML → GPX 命名转换页
   player.html         回放分析页（PC 端）→ /gpx/player.html
   portal.html         服务门户 → Caddy file_server 直接提供
 deploy/               部署用配置（Caddyfile 等）
@@ -62,6 +71,7 @@ tests/                单元 + 端到端 + 前端回归
 | `tile-providers` | Windy / OpenTopoMap 图层与取瓦片策略 |
 | `tile-proxy-cache` | 瓦片代理 + 磁盘缓存（解决浏览器 CORS） |
 | `track-playback` | 回放页：多格式导入、图层、标注、导出 |
+| `track-conversion` | KML/KMZ → GPX，航点与轨迹重命名（含可选 AI 命名） |
 | `service-portal` | 门户主页与路径分流 |
 | `deployment` | Caddy / 代理 / 自愈 / CI 自动部署 |
 
@@ -86,6 +96,18 @@ tests/                单元 + 端到端 + 前端回归
 
 5. **瓦片缓存是只读缓存**，可安全淘汰；成品文件（.gpkg/.mbtiles）是交付物，
    两者生命周期不同，不可混淆。
+6. **Garmin .img 转 .gmap 有若干硬坑**（详见 docs/GARMIN_IMGPACK.md）：
+   - GMapTool 图形版和 cGPSmapper 都**产不出** .gmap，它们只做 MapSource 注册表挂载；
+   - IMG 的 FAT 表位置不固定，子文件名是**定长** 8+3 字节，扇区结束符要按无符号 0xFFFF 判断；
+   - BaseCamp 显示的名称来自 **TDB**，不是 Info.xml，两者要一致；
+   - 空壳 TYP（小于 1 KB、无要素定义）会让 BaseCamp 判定安装存在问题；
+   - **同 FID 的多个包只认一个**，多地图共存前必须核对 FID 互不重复。
+7. **两步路 KML 的时间有三个字段，别相减错了。** `<gx:Track>` 的 `<when>` 是 UTC；
+   标注点 `description` 里的「时间：10:43:05」是 UTC+8 本地钟点；
+   `ExtendedData.Time` 是同一时刻的毫秒 epoch。换算累计耗时要先把本地钟点
+   按 +8 还原成 UTC 再相减，直接相减会整整差 8 小时。
+8. **标注点没有 `<name>` 是常态。** 真实样例里轨迹名是「轨迹片段1」、
+   30 个标注点全部无名，只有坐标、海拔、时间和附件 id 可用。名称只能自己算。
 
 ## 合规红线
 

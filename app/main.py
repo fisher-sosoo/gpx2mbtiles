@@ -9,7 +9,10 @@ from fastapi.responses import (FileResponse, JSONResponse, Response,
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .gpx_processor import GpxParseError, build_tile_plan, parse_gpx
+from .gpx_converter import convert
+from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
+                            parse_track_points)
+from .kml_processor import KmlParseError
 from .task_manager import (COMPLETED, TaskLimitError, TaskManager,
                            TaskNotFoundError)
 from .tile_cache import TileCache, valid_xyz
@@ -207,8 +210,9 @@ async def submit(
 ):
     """提交任务：上传 GPX + 参数，返回 task_id。"""
     filename = file.filename or "track.gpx"
-    if not filename.lower().endswith((".gpx", ".xml")):
-        raise HTTPException(status_code=400, detail="仅支持 .gpx 文件")
+    if not _is_track_file(filename):
+        raise HTTPException(status_code=400,
+                            detail="仅支持 .gpx / .kml / .kmz 文件")
     gpx_data = await file.read()
     if len(gpx_data) > settings.max_gpx_bytes:
         raise HTTPException(status_code=413,
@@ -217,9 +221,8 @@ async def submit(
         raise HTTPException(status_code=400, detail="GPX 文件为空")
     # 提前校验格式，失败不建任务
     try:
-        from .gpx_processor import parse_gpx
-        parse_gpx(gpx_data)
-    except GpxParseError as exc:
+        _parse_track_points(gpx_data, filename)
+    except (GpxParseError, KmlParseError) as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     output_format = output_format.strip().lower()
@@ -244,6 +247,8 @@ async def submit(
         "tile_layer": tile_layer,
         "custom_name": custom_name.strip(),
         "allow_oversize": allow_oversize_b,
+        # 记录原始文件名：任务在 worker 里重新解析时要据此判断 GPX / KML / KMZ
+        "source_filename": filename,
     }
     try:
         task = await manager.submit(gpx_data, params)
@@ -324,14 +329,15 @@ async def estimate(
 ):
     """预估瓦片数（不建任务）。"""
     filename = file.filename or "track.gpx"
-    if not filename.lower().endswith((".gpx", ".xml")):
-        raise HTTPException(status_code=400, detail="仅支持 .gpx 文件")
+    if not _is_track_file(filename):
+        raise HTTPException(status_code=400,
+                            detail="仅支持 .gpx / .kml / .kmz 文件")
     gpx_data = await file.read()
     if len(gpx_data) > settings.max_gpx_bytes:
         raise HTTPException(status_code=413,
                             detail=f"GPX 文件过大（限制 {settings.max_gpx_bytes // (1024*1024)}MB）")
     try:
-        points, _ = parse_gpx(gpx_data)
+        points, _ = _parse_track_points(gpx_data, filename)
         if int(min_zoom) > int(max_zoom):
             raise GpxParseError(f"最小缩放级别({min_zoom})不能大于最大缩放级别({max_zoom})")
         plan = build_tile_plan(points, float(buffer_meters),
@@ -343,6 +349,62 @@ async def estimate(
         "point_count": plan.point_count,
         "max_tiles_per_task": settings.max_tiles_per_task,
         "exceeds_limit": len(plan.tiles) > settings.max_tiles_per_task,
+    }
+
+
+# ---------------------------------------------------------------- 命名转换
+# KML/KMZ 里的「标注点」普遍没有 <name>，轨迹名也只有「轨迹片段1」这种占位词，
+# 转成 GPX 后 App 里全是无意义标签。这里在转换时按 metadata 重新组织名称。
+
+TRACK_EXTS = (".gpx", ".xml", ".kml", ".kmz")
+
+
+def _is_track_file(filename: str) -> bool:
+    return filename.lower().endswith(TRACK_EXTS)
+
+
+def _parse_track_points(data: bytes, filename: str):
+    """统一取点入口（实现见 gpx_processor，worker 也用同一份）。"""
+    return parse_track_points(data, filename)
+
+
+@app.post("/api/convert", dependencies=[Depends(require_api_key)])
+async def convert_track(
+    file: UploadFile | None = File(None),
+    text: str = Form(""),
+    track_name: str = Form(""),
+    filename: str = Form(""),
+    ai_names: bool = Form(False),
+):
+    """KML/KMZ → 命名整理过的 GPX（无状态，不建任务）。
+
+    ai_names=true 时额外调用一次模型给航点起语义名称；失败自动回退，不影响转换。
+    """
+    data = b""
+    name = (filename or "").strip()
+    if file is not None:
+        name = file.filename or name
+        data = await file.read()
+    elif text.strip():
+        data = text.encode("utf-8")
+        name = name or "pasted.kml"
+    if not data or not data.strip():
+        raise HTTPException(status_code=400, detail="请上传 KML/KMZ 文件或粘贴 KML 内容")
+    if len(data) > settings.max_convert_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大（限制 {settings.max_convert_bytes // (1024*1024)}MB）")
+    want_ai = (ai_names if isinstance(ai_names, bool)
+               else str(ai_names).strip().lower() in ("1", "true", "yes", "on"))
+    try:
+        result = convert(data, name, track_name.strip(),
+                         ai_names=want_ai, settings=settings)
+    except KmlParseError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return {
+        "gpx": result.gpx,
+        "filename": result.filename,
+        "summary": result.summary.to_dict(),
     }
 
 

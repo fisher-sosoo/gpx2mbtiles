@@ -9,6 +9,9 @@ __pycache__/
 .pytest_cache/
 *.mbtiles
 .env
+# 本地模型 API Key（禁止入库；线上用环境变量 DEEPSEEK_API_KEY 注入）
+apikey
+apikey.txt
 smoke.gpx
 smoke_out.mbtiles
 # 本地部署辅助工具（含服务器凭据，禁止入库）

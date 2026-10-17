@@ -50,6 +50,26 @@ def parse_gpx(data: bytes):
     return points, name
 
 
+TRACK_FILE_EXTS = (".gpx", ".xml", ".kml", ".kmz")
+
+
+def is_kml_name(filename: str) -> bool:
+    return (filename or "").lower().endswith((".kml", ".kmz"))
+
+
+def parse_track_points(data: bytes, filename: str = ""):
+    """统一取点入口：GPX 用 gpxpy，KML/KMZ 先转换再取点。
+
+    生成器只关心「覆盖了哪些位置」，所以格式差异在这里抹平，
+    下游 build_tile_plan 无需知道上游是哪种文件。
+    """
+    if is_kml_name(filename):
+        from .gpx_converter import extract_points
+        points, name, extra = extract_points(data, filename)
+        return points + extra, name
+    return parse_gpx(data)
+
+
 def _tile_ranges_for_point(lat: float, lon: float, buffer_meters: float, zoom: int):
     """以轨迹点为中心、buffer 米为缓冲，计算覆盖的 (x, y) 瓦片范围。"""
     n = 1 << zoom

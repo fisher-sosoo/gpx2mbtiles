@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KML → GPX 命名转换</title>
+<style>
+  :root { --bg:#0e141b; --card:#1a2430; --line:#2a3848; --accent:#4da3ff; --ok:#3ecf8e;
+          --err:#ff6b6b; --warn:#ffb454; --muted:#8aa0b4; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
+         background:var(--bg); color:#e8eef4; padding:12px; padding-bottom:32px; }
+  h1 { font-size:19px; margin:8px 0 2px; display:flex; align-items:center; justify-content:space-between;
+       gap:8px; flex-wrap:wrap; }
+  .nav { display:flex; gap:8px; flex-wrap:wrap; }
+  .nav a { font-size:12.5px; font-weight:600; color:#4da3ff; text-decoration:none;
+           background:#243547; border-radius:9px; padding:8px 12px; white-space:nowrap; }
+  .sub { color:var(--muted); font-size:12.5px; margin-bottom:14px; line-height:1.5; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:14px; margin-bottom:12px; }
+  .card h2 { font-size:14px; margin:0 0 10px; color:#9fc2e8; font-weight:600; }
+  label { font-size:13px; color:#a9bccb; display:block; margin:10px 0 4px; }
+  input[type=text] { width:100%; background:#0f1822; border:1px solid var(--line); color:#e8eef4;
+    border-radius:9px; padding:9px 10px; font-size:15px; }
+  #drop { border:2px dashed var(--line); border-radius:12px; padding:22px 14px; text-align:center;
+          color:var(--muted); font-size:13px; cursor:pointer; transition:.15s; }
+  #drop.hover { border-color:var(--accent); color:#cfe1f2; background:#16202b; }
+  #drop b { color:#cfe1f2; }
+  button { border:0; border-radius:11px; padding:12px 16px; font-size:15px; font-weight:600;
+    cursor:pointer; background:var(--accent); color:#06233f; width:100%; margin-top:6px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.secondary { background:#243547; color:#cfe1f2; }
+  .hint { font-size:12px; color:#7890a4; margin-top:6px; line-height:1.5; }
+  .err-box { display:none; background:#2b1a1a; border:1px solid #5b2a2a; color:#ffb4b4;
+    border-radius:10px; padding:10px 12px; font-size:13px; margin-bottom:12px; white-space:pre-wrap; }
+  .err-box.show { display:block; }
+  .stat { display:flex; justify-content:space-between; gap:10px; font-size:13.5px; padding:5px 0;
+          color:#c3d2df; }
+  .stat b { color:#fff; font-variant-numeric:tabular-nums; text-align:right; }
+  .tracks { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+  .track-name { background:#0f1822; border:1px solid var(--line); border-radius:9px;
+                padding:9px 11px; font-size:14px; font-weight:600; color:#fff;
+                word-break:break-all; }
+  .track-meta { font-size:12px; color:var(--muted); margin-top:3px; font-weight:400; }
+  .tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .tbl th { text-align:left; color:#8aa0b4; font-weight:600; padding:6px 4px;
+            border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--card); }
+  .tbl td { padding:6px 4px; border-bottom:1px solid #212d3a; color:#c3d2df;
+            font-variant-numeric:tabular-nums; }
+  .tbl td.nm { color:#fff; word-break:break-all; }
+  .scroll { max-height:420px; overflow-y:auto; }
+  .src { display:inline-block; font-size:10.5px; padding:2px 7px; border-radius:20px;
+         background:#243547; color:#9fc2e8; white-space:nowrap; }
+  .src.position { background:#123c2a; color:var(--ok); }
+  .src.name { background:#203a57; color:#7cc0ff; }
+  .src.note { background:#3a2a1d; color:var(--warn); }
+  .summary-line { font-size:12.5px; color:var(--muted); line-height:1.6; margin-bottom:8px; }
+  .warn-line { color:var(--warn); font-size:12.5px; margin-top:8px; line-height:1.6; }
+</style>
+</head>
+<body>
+<h1>
+  <span>🏷️ KML → GPX 命名转换</span>
+  <span class="nav">
+    <a href="/gpx/">📦 离线地图</a>
+    <a href="/gpx/player.html">🎬 轨迹回放</a>
+  </span>
+</h1>
+<div class="sub">
+  两步路等 App 导出的 KML 里，标注点和轨迹都没有像样的名字，转成 GPX 后导入只认 GPX 的 App
+  只会显示时间和海拔。这里会按「已走里程 + 累计耗时」自动命名航点，按「地点 + 日期 + 运动类型」命名轨迹。<br>
+  <i>纯服务端解析，不上传瓦片、不消耗服务器带宽</i>
+</div>
+
+<div class="err-box" id="errBox"></div>
+
+<div class="card">
+  <h2>1 · 选择 KML / KMZ</h2>
+  <div id="drop">
+    <b>点击选择文件</b>，或把 .kml / .kmz 拖到这里
+    <div class="hint" id="fileName" style="min-height:18px"></div>
+  </div>
+  <input type="file" id="fileInput" accept=".kml,.kmz" style="display:none">
+  <label>自定义轨迹名 <span class="hint">（不填则按「地点 + 日期 + 运动类型」自动生成）</span></label>
+  <input type="text" id="customName" placeholder="例如：英德雪山嶂环线" maxlength="80">
+  <label style="display:flex;align-items:flex-start;gap:8px;margin-top:14px;cursor:pointer">
+    <input type="checkbox" id="aiNames" style="margin-top:3px;flex-shrink:0">
+    <span>
+      <b style="color:#cfe1f2">AI 推测命名</b>
+      <span class="hint" style="display:block;margin-top:2px">
+        让模型根据海拔变化与行进节奏给航点起名（如「碎石陡段」「雪山嶂顶」）。<br>
+        默认关闭；开启会调用一次 AI 服务，名称属推测，可能与实际地物不符。
+      </span>
+    </span>
+  </label>
+  <button id="convertBtn">🔄 转换为 GPX</button>
+</div>
+
+<div class="card" id="resultCard" style="display:none">
+  <h2>2 · 转换结果</h2>
+  <div class="summary-line" id="summaryLine"></div>
+  <div class="tracks" id="trackList"></div>
+  <div id="warnLine" class="warn-line" style="display:none"></div>
+  <button id="downloadBtn">⬇️ 下载 GPX</button>
+  <div class="hint" id="useHint">下载后可导入仅支持 GPX 的 App（Avenza / Guru Maps / 两步路 等），也可直接回到离线地图页生成底图。</div>
+</div>
+
+<div class="card" id="wpCard" style="display:none">
+  <h2>3 · 航点命名明细</h2>
+  <div class="summary-line" id="sourceStats"></div>
+  <div class="scroll">
+    <table class="tbl">
+      <thead>
+        <tr><th>名称</th><th>里程</th><th>累计耗时</th><th>海拔</th><th>来源</th></tr>
+      </thead>
+      <tbody id="wpBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="hint">
+    · 航点命名优先级：文件里的名称 → 用户备注 → 所在位置（里程 + 累计耗时）→ 照片文件名。<br>
+    · 累计耗时是从轨迹起点算起的时长，不是钟点，因此不受时区影响。<br>
+    · 转换结果不保存到服务器，刷新页面即丢弃。
+  </div>
+</div>
+
+<script>
+(function () {
+  var API_KEY = localStorage.getItem('gpx2mbtiles_key') || '';
+  var state = { file: null, result: null };
+
+  var SRC_LABEL = {
+    position: '所在位置',
+    name: '原名称',
+    note: '用户备注',
+    attach: '照片文件',
+    time: '时间海拔',
+    ai: 'AI 推测'
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function showErr(msg) { var b = $('errBox'); b.textContent = msg; b.classList.add('show'); }
+  function clearErr() { $('errBox').classList.remove('show'); }
+
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    if (API_KEY) opts.headers['X-API-Key'] = API_KEY;
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 401) {
+        var key = prompt('请输入服务端 API Key（AUTH_TOKEN）：', API_KEY);
+        if (key === null) return Promise.reject(new Error('需要 API Key'));
+        API_KEY = key.trim();
+        localStorage.setItem('gpx2mbtiles_key', API_KEY);
+        opts.headers['X-API-Key'] = API_KEY;
+        return fetch(url, opts);
+      }
+      return r;
+    });
+  }
+
+  function fmtKm(km) { return km === null || km === undefined ? '-' : km.toFixed(2) + ' km'; }
+  function fmtMin(sec) {
+    if (sec === null || sec === undefined) return '-';
+    var m = Math.round(sec / 60);
+    return Math.floor(m / 60) + ':' + ('0' + (m % 60)).slice(-2);
+  }
+  function fmtDist(m) {
+    if (!m) return '-';
+    return m >= 1000 ? (m / 1000).toFixed(2) + ' km' : Math.round(m) + ' m';
+  }
+
+  // ---------- 文件选择 / 拖拽 ----------
+  var drop = $('drop');
+  var input = $('fileInput');
+  drop.addEventListener('click', function () { input.click(); });
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('hover'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('hover'); });
+  });
+  drop.addEventListener('drop', function (e) {
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  input.addEventListener('change', function () {
+    if (input.files && input.files[0]) setFile(input.files[0]);
+  });
+
+  function setFile(f) {
+    if (!/\.(kml|kmz)$/i.test(f.name)) { showErr('请选择 .kml 或 .kmz 文件'); return; }
+    clearErr();
+    state.file = f;
+    $('fileName').textContent = '已选择：' + f.name + '（' + (f.size / 1024).toFixed(0) + ' KB）';
+    // 用文件名猜一个轨迹名，方便用户直接改
+    if (!$('customName').value) {
+      var base = f.name.replace(/\.(kml|kmz)$/i, '');
+      $('customName').placeholder = '例如：' + base.replace(/^\d{4}[-_./]?\d{1,2}[-_./]?\d{1,2}[\s_-]*/, '');
+    }
+  }
+
+  // ---------- 转换 ----------
+  $('convertBtn').addEventListener('click', function () {
+    if (!state.file) { showErr('请先选择 KML / KMZ 文件'); return; }
+    clearErr();
+    var btn = $('convertBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 转换中…';
+
+    var fd = new FormData();
+    fd.append('file', state.file);
+    fd.append('track_name', $('customName').value.trim());
+    if ($('aiNames').checked) fd.append('ai_names', 'true');
+
+    apiFetch('/api/convert', { method: 'POST', body: fd })
+      .then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+      })
+      .then(function (res) {
+        btn.disabled = false;
+        btn.textContent = '🔄 转换为 GPX';
+        if (!res.ok) { showErr('转换失败：' + (res.j.detail || JSON.stringify(res.j))); return; }
+        state.result = res.j;
+        render(res.j);
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = '🔄 转换为 GPX';
+        showErr('网络错误：' + e);
+      });
+  });
+
+  function render(res) {
+    var s = res.summary || {};
+    $('resultCard').style.display = 'block';
+    $('wpCard').style.display = 'block';
+
+    var parts = [];
+    if (s.date) parts.push('日期 ' + s.date);
+    if (s.sport) parts.push(s.sport);
+    if (s.distance_m) parts.push('里程 ' + fmtDist(s.distance_m));
+    parts.push('航点 ' + (s.waypoint_count || 0) + ' 个');
+    $('summaryLine').textContent = parts.join(' · ');
+
+    var tl = $('trackList');
+    tl.innerHTML = '';
+    (s.tracks || []).forEach(function (t) {
+      var d = document.createElement('div');
+      d.className = 'track-name';
+      d.textContent = t.name;
+      var meta = document.createElement('div');
+      meta.className = 'track-meta';
+      meta.textContent = t.points + ' 个轨迹点 · ' + fmtDist(t.distance_m);
+      d.appendChild(meta);
+      tl.appendChild(d);
+    });
+
+    // 里程对不上时给个提示，避免用户以为数据丢了
+    var warns = [];
+    if ((s.degraded || []).indexOf('distance_mismatch') >= 0) {
+      warns.push('算出的里程与文件自报的 ' + fmtDist(s.declared_distance_m) +
+                 ' 相差超过 10%，通常是因为轨迹点较稀疏。');
+    }
+    if ((s.degraded || []).indexOf('no_track') >= 0) {
+      warns.push('文件里没有轨迹，里程按相邻航点连线估算。');
+    }
+    if (s.skipped) warns.push('已跳过 ' + s.skipped + ' 个不支持的要素。');
+    if (s.ai_used) {
+      warns.push('其中 ' + s.ai_named + ' 个名称由 AI 根据海拔与节奏推测，仅供参考，导入后可在 App 里自行改名。');
+    } else if (s.ai_error && $('aiNames').checked) {
+      warns.push('AI 命名未生效：' + s.ai_error + '（已回退为规则命名）');
+    }
+    $('warnLine').style.display = warns.length ? 'block' : 'none';
+    $('warnLine').textContent = warns.join(' ');
+
+    var stats = s.name_sources || {};
+    var statParts = Object.keys(stats).map(function (k) {
+      return (SRC_LABEL[k] || k) + ' ' + stats[k] + ' 个';
+    });
+    $('sourceStats').textContent = statParts.length ? '命名来源：' + statParts.join(' · ') : '';
+
+    var body = $('wpBody');
+    body.innerHTML = '';
+    var rows = [];
+    if (s.start_point) rows.push({ name: '起点', km: s.start_point.km, elapsed_s: null, ele: null, source: 'special' });
+    rows = rows.concat(s.waypoints || []);
+    if (s.end_point) rows.push({ name: '终点', km: s.end_point.km, elapsed_s: null, ele: null, source: 'special' });
+
+    rows.forEach(function (w) {
+      var tr = document.createElement('tr');
+      var label = w.source === 'special' ? '起终点' : (SRC_LABEL[w.source] || w.source);
+      tr.innerHTML =
+        '<td class="nm"></td><td>' + fmtKm(w.km) + '</td><td>' + fmtMin(w.elapsed_s) + '</td>' +
+        '<td>' + (w.ele === null || w.ele === undefined ? '-' : Math.round(w.ele) + ' m') + '</td>' +
+        '<td><span class="src ' + (w.source || '') + '">' + label + '</span></td>';
+      tr.querySelector('td.nm').textContent = w.name;
+      body.appendChild(tr);
+    });
+  }
+
+  // ---------- 下载 ----------
+  $('downloadBtn').addEventListener('click', function () {
+    if (!state.result) return;
+    var blob = new Blob([state.result.gpx], { type: 'application/gpx+xml' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = state.result.filename || 'track.gpx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  });
+})();
+</script>
+</body>
+</html>

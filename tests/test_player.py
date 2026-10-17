@@ -67,7 +67,7 @@ def test_player_has_core_features():
         "DecompressionStream",                      # KMZ 解压
         "gx:Track", "gx:coord",                     # Google 扩展轨迹
         "kmlColorToHex",                            # KML aabbggrr 颜色
-        "tiles.windy.com",                          # Windy 底图
+        "/api/tile/windy/",                         # Windy 经服务端代理（CORS 限制）
         "opentopomap.org",                          # OTM 底图
         "showLabel",                                # 轨迹名称标签开关
         "renderMarkLabels",                         # 标记名称常驻显示
@@ -79,14 +79,12 @@ def test_player_has_core_features():
         "data-act=\"color\"",                    # 颜色选择
         "sampleByDistance",                         # 里程桩
         "buildEndpoints", "buildArrows",            # 起终点 / 方向箭头
-        "updateWhenIdle", "updateWhenZooming",      # Windy 瓦片节流（防 403）
-        "keepBuffer", "applyWindyThrottle",         # 并发与缓冲收紧
-        "id=\"tileSpeed\"",                      # 瓦片加载速度档位
+        "updateWhenIdle", "keepBuffer",             # 瓦片延迟加载与缓冲收紧
         "localStorage",                             # 本地持久化
         "exportGpx", "exportJson",                  # 导出
         "drawLegendCanvas", "drawPolyline",         # PNG 截图（直接绘制到 canvas）
         "projectPoint",                             # 经纬度 -> 像素投影
-        "scheduleRetry", "MAX_TRIES",               # 失败瓦片带退避重试
+        "errorTileUrl", "TRANSPARENT_TILE",         # 失败瓦片透明占位（重试已移到服务端）
     ):
         assert snippet in html, f"回放页缺少功能要素: {snippet}"
 
@@ -120,13 +118,22 @@ def test_tile_layer_does_not_force_cors():
     assert "opts.crossOrigin" not in html, "底图不应开启 crossOrigin"
 
 
-def test_player_does_not_touch_server_api():
-    """回放页必须是纯前端：不得向本服务端请求瓦片或调用 /api/。"""
+def test_player_only_uses_tile_proxy_api():
+    """回放页的解析/渲染/导出仍在浏览器完成，唯一的服务端调用是瓦片代理。
+
+    Windy 响应头违反 CORS 规范（credentials:true 与 origin:* 并存），浏览器直连会
+    ERR_BLOCKED_BY_ORB，因此必须走 /api/tile/windy/。除此之外不得调用任何任务类接口，
+    也不得用本服务的通用 /tiles/ 路径。
+    """
     html = _read(PLAYER)
     js = _extract_inline_js(html)
-    assert "/api/" not in js, "回放页不应调用服务端 /api/ 接口"
-    # 瓦片只能直连外部源，不能走自己的域名
-    assert "/tiles/" not in js, "回放页不应通过本服务端代理瓦片"
+    for banned in ("/api/submit", "/api/estimate", "/api/status", "/api/tasks"):
+        assert banned not in js, f"回放页不应调用生成类接口: {banned}"
+    assert "/tiles/" not in js, "回放页不应使用通用 /tiles/ 路径"
+    # 允许的 /api/ 调用只有瓦片代理与缓存统计
+    import re as _re
+    used = set(_re.findall(r"/api/[a-z]+", js))
+    assert used <= {"/api/tile", "/api/tilecache"}, f"回放页出现意外的接口调用: {used}"
 
 
 def test_index_links_to_player():
@@ -235,21 +242,70 @@ def test_kml_color_conversion():
         Path(tmp).unlink(missing_ok=True)
 
 def test_windy_tile_throttling_present():
-    """Windy 对密集请求会返回 403，回放页必须保留节流配置。
+    """瓦片请求必须延迟加载并收紧缓冲。
 
-    历史上这里踩过坑：Leaflet 默认在拖动/缩放动画期间持续请求瓦片，
-    并预取视口外 2 圈，很容易被瓦片源判定为爬取而拒绝。
+    历史教训：Leaflet 默认在拖动/缩放动画期间持续请求瓦片、并预取视口外 2 圈，
+    很容易被瓦片源判定为爬取而返回 403。
+
+    注意：前端不再自己做队列限速 —— 按 tile-proxy-cache 规范，限速只作用于
+    「服务端 → 上游」，浏览器请求的是本站，命中磁盘缓存时根本不回源。
     """
     js = _extract_inline_js(_read(PLAYER))
-    # 三档速度预设
-    for key in ("safe", "normal", "fast"):
-        assert key + ":" in js, f"缺少瓦片速度档位: {key}"
-    # 默认必须开启延迟加载与低缓冲
-    assert "updateWhenIdle = (key === 'windy')" in js, "Windy 底图应启用 updateWhenIdle"
-    assert "updateWhenZooming = false" in js, "应禁用缩放动画期间的瓦片请求"
-    assert "keepBuffer = 1" in js, "应把 keepBuffer 收紧到 1"
-    # 队列式限流
-    assert "function pump()" in js, "缺少瓦片请求队列"
-    assert "MAX_PARALLEL" in js and "MIN_GAP" in js, "缺少并发/间隔控制"
-    # 403 时要有透明占位，避免地图显示碎图
-    assert "errorTileUrl" in js and "TRANSPARENT_TILE" in js, "缺少失败瓦片的透明占位"
+    assert "updateWhenIdle" in js, "应开启瓦片延迟加载"
+    assert "keepBuffer" in js, "应显式设置缓冲圈数"
+    # 前端不应再自行排队限速（会白白拖慢命中缓存的请求）
+    assert "function pump()" not in js, "前端不应恢复队列式限速"
+
+# ---------------------------------------------------------------- 转换页
+
+CONVERT_PAGE = ROOT / "web" / "convert.html"
+
+
+def test_convert_page_exists_and_has_features():
+    assert CONVERT_PAGE.is_file(), "缺少 web/convert.html"
+    html = _read(CONVERT_PAGE)
+    for snippet in (
+        "/api/convert",              # 走服务端转换
+        'accept=".kml,.kmz"',        # 只收 KML/KMZ
+        "dataTransfer",              # 支持拖拽
+        "track_name",                # 自定义轨迹名
+        "download",                  # 下载按钮
+        "name_sources",              # 命名来源统计
+        "累计耗时",                   # 航点表头
+        "里程",                       # 航点表头
+    ):
+        assert snippet in html, f"转换页缺少要素: {snippet}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 不可用")
+def test_convert_page_js_syntax():
+    js = _extract_inline_js(_read(CONVERT_PAGE))
+    assert js.strip(), "转换页未找到内联脚本"
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(js)
+        tmp = f.name
+    try:
+        proc = subprocess.run(["node", "--check", tmp], capture_output=True, text=True)
+        assert proc.returncode == 0, f"转换页 JS 语法错误：\n{proc.stderr}"
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def test_convert_page_does_not_call_task_api():
+    """转换页只做同步转换，不该提交生成任务。"""
+    js = _extract_inline_js(_read(CONVERT_PAGE))
+    assert "/api/submit" not in js
+    assert "/api/estimate" not in js
+
+
+def test_convert_page_linked_from_all_pages():
+    assert 'href="/gpx/convert.html"' in _read(INDEX)
+    assert 'href="/gpx/convert.html"' in _read(PLAYER)
+    assert 'href="/gpx/convert.html"' in _read(PORTAL)
+
+
+def test_index_accepts_kml_upload():
+    html = _read(INDEX)
+    assert 'accept=".gpx,.xml,.kml,.kmz"' in html
+    assert "KML" in html

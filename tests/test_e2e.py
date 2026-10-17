@@ -385,3 +385,101 @@ async def test_invalid_params_rejected(client):
     s = await _poll_status(client, resp.json()["task_id"])
     assert s["status"] == FAILED
     assert "缩放" in s["error"] or "不能大于" in s["error"]
+
+# ---------------------------------------------------------------- KML 转换
+
+async def test_convert_endpoint_real_sample(client):
+    """/api/convert：真实样本 → 带名称的 GPX + 摘要。"""
+    from tests.conftest import sample_kml_bytes
+    files = {"file": ("2023-02-18 英德雪山嶂环线.kml",
+                      sample_kml_bytes(), "application/vnd.google-earth.kml+xml")}
+    resp = await client.post("/api/convert", files=files,
+                             data={"track_name": ""})
+    assert resp.status_code == 200
+    j = resp.json()
+    s = j["summary"]
+    assert s["tracks"][0]["name"] == "英德雪山嶂环线 2023-02-18 爬山"
+    assert s["waypoint_count"] == 30
+    assert len(s["waypoints"]) == 30
+    assert s["name_sources"]["position"] == 30
+    assert j["filename"].endswith(".gpx")
+    assert "<gpx" in j["gpx"]
+    assert "#01 " in j["gpx"]
+
+
+async def test_convert_custom_track_name(client):
+    from tests.conftest import sample_kml_bytes
+    files = {"file": ("x.kml", sample_kml_bytes(),
+                      "application/vnd.google-earth.kml+xml")}
+    resp = await client.post("/api/convert", files=files,
+                             data={"track_name": "我的环线"})
+    assert resp.status_code == 200
+    j = resp.json()
+    assert j["summary"]["tracks"][0]["name"] == "我的环线"
+    assert j["filename"] == "我的环线.gpx"
+
+
+async def test_convert_from_text(client):
+    from tests.conftest import make_kml
+    kml = make_kml(track_times=[(113.0, 24.0, 1, "2023-02-18T02:00:00Z"),
+                                (113.1, 24.1, 2, "2023-02-18T02:10:00Z")],
+                   doc_name="2023-02-18 测试线")
+    resp = await client.post("/api/convert",
+                             data={"text": kml, "filename": "a.kml"})
+    assert resp.status_code == 200
+    assert resp.json()["summary"]["tracks"][0]["points"] == 2
+
+
+async def test_convert_rejects_bad_input(client):
+    resp = await client.post("/api/convert", data={"text": "not xml"})
+    assert resp.status_code == 400
+    assert "解析失败" in resp.json()["detail"]
+
+    resp = await client.post("/api/convert", data={"text": "<gpx/>"})
+    assert resp.status_code == 400
+    assert "KML" in resp.json()["detail"]
+
+
+async def test_convert_requires_target(client):
+    resp = await client.post("/api/convert", data={"text": "   "})
+    assert resp.status_code == 400
+
+
+async def test_convert_does_not_create_task(client):
+    from tests.conftest import make_kml
+    kml = make_kml(track_times=[(113.0, 24.0, 1, "2023-02-18T02:00:00Z"),
+                                (113.1, 24.1, 2, "2023-02-18T02:10:00Z")])
+    await client.post("/api/convert", data={"text": kml})
+    tasks = (await client.get("/api/tasks")).json()["tasks"]
+    assert tasks == []
+
+
+async def test_estimate_accepts_kml(client):
+    from tests.conftest import make_kml
+    kml = make_kml(track_times=[(113.0, 24.0, 1, "2023-02-18T02:00:00Z"),
+                                (113.1, 24.1, 2, "2023-02-18T02:10:00Z")])
+    files = {"file": ("t.kml", kml.encode(), "application/vnd.google-earth.kml+xml")}
+    data = {"buffer_meters": "0", "min_zoom": "10", "max_zoom": "10"}
+    resp = await client.post("/api/estimate", files=files, data=data)
+    assert resp.status_code == 200
+    j = resp.json()
+    assert j["point_count"] == 2
+    assert j["tiles"] >= 1
+    tasks = (await client.get("/api/tasks")).json()["tasks"]
+    assert tasks == []
+
+
+async def test_submit_accepts_kml(client):
+    """KML 直接提交也能完成任务（服务端先转换再取点）。"""
+    from tests.conftest import make_kml
+    kml = make_kml(track_times=[(113.0, 24.0, 1, "2023-02-18T02:00:00Z"),
+                                (113.1, 24.1, 2, "2023-02-18T02:10:00Z")],
+                   doc_name="2023-02-18 测试线")
+    files = {"file": ("t.kml", kml.encode(), "application/vnd.google-earth.kml+xml")}
+    data = {"buffer_meters": "0", "min_zoom": "10", "max_zoom": "10",
+            "concurrency": "1", "interval_ms": "0", "output_format": "mbtiles"}
+    resp = await client.post("/api/submit", files=files, data=data)
+    assert resp.status_code == 200
+    s = await _poll_status(client, resp.json()["task_id"])
+    assert s["status"] == COMPLETED
+    assert s["total_tiles"] >= 1

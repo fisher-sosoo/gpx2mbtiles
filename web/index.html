@@ -61,13 +61,16 @@
 </h1>
 <div class="sub">上传 GPX 轨迹 → 云服务器下载瓦片并生成离线底图 → 导入 Avenza / Guru Maps 离线导航。<br>
 <i>仅供个人自用 · iOS 锁屏会暂停网页轮询，服务端任务继续运行，回前台自动续查</i></div>
+<a href="/gpx/convert.html" style="display:block;font-size:12.5px;font-weight:600;color:#3ecf8e;text-decoration:none;
+   background:#1d2a1d;border:1px solid #2e4a2e;border-radius:10px;padding:10px 12px;margin-bottom:12px">
+  🏷️ 两步路导出的 KML？先点这里转成带名字的 GPX →</a>
 
 <div class="err-box" id="errBox"></div>
 
 <div class="card">
-  <h2>1 · 选择 GPX 文件</h2>
-  <input type="file" id="gpxFile">
-  <div class="hint">支持标准 GPX 轨迹文件（trkpt / rtept / wpt）</div>
+  <h2>1 · 选择轨迹文件</h2>
+  <input type="file" id="gpxFile" accept=".gpx,.xml,.kml,.kmz">
+  <div class="hint">支持 GPX（trkpt / rtept / wpt），也可直接上传 KML / KMZ —— 会先转成 GPX 再取轨迹点</div>
 </div>
 
 <div class="card">

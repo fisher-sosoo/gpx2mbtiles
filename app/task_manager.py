@@ -10,7 +10,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 from .config import Settings
-from .gpx_processor import GpxParseError, build_tile_plan, parse_gpx
+from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
+                            parse_track_points)
 from .gpkg_builder import GpkgBuilder
 from .mbtiles_builder import MbtilesBuilder
 from .tile_downloader import TileFetcher, download_tiles
@@ -260,6 +261,8 @@ class TaskManager:
                 "allow_oversize": bool(params.get("allow_oversize")),
                 "tile_layer": tile_layer,
                 "custom_name": str(params.get("custom_name") or "").strip(),
+                # 原始文件名决定 worker 用哪种解析器（GPX / KML / KMZ）
+                "source_filename": str(params.get("source_filename") or ""),
             },
         )
         # 先落盘 GPX
@@ -309,9 +312,11 @@ class TaskManager:
         timeout = settings.task_timeout_seconds
         fetcher = None  # 在 eff_settings 构建后再创建（需 provider 特定的 URL/UA/Referer）
         try:
-            # 1. 解析 GPX（轨迹名缺失时保留上传文件名）
+            # 1. 解析轨迹（轨迹名缺失时保留上传文件名）
+            # 上传的可能是 KML/KMZ，这里与原文件名一起交给统一取点入口
             gpx_bytes = self.input_gpx_path(task.id).read_bytes()
-            points, name = parse_gpx(gpx_bytes)
+            stored_name = str(task.params.get("source_filename") or task.name or "")
+            points, name = parse_track_points(gpx_bytes, stored_name)
             if name and name != "track":
                 task.name = name
             task.point_count = len(points)
