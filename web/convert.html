@@ -868,8 +868,10 @@
           .then(function (r) { return r.json(); })
           .then(function (d) {
             if (d && d.summary) {
-              // 保留已有的 gpx 文本：出图与下载都要用，不能只留 summary
-              if (state.result && state.result.gpx) d.gpx = state.result.gpx;
+              // 接口没带 gpx 时才沿用旧的；带了就用新的（岔路重算后 gpx 会变新）
+              if (!d.gpx && state.result && state.result.gpx) {
+                d.gpx = state.result.gpx;
+              }
               state.result = d;
               render(d);
             }
