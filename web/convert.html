@@ -121,7 +121,7 @@
     从 OpenStreetMap 拉取沿线的垭口、牛场、营地、山峰、湖泊与过河点。
     垭口/牛场要求贴近路线，山峰作为地标可远观，村镇只在起终点标注，河流只在过河处标注。
   </div>
-  <div id="poiList"><div class="hint">未查询</div></div>
+  <div id="poiList"><div class="hint">还没有查询，点下面的按钮从 OpenStreetMap 拉取沿线地名</div></div>
   <div class="row2" style="margin-top:10px">
     <button class="secondary" id="poiBtn" style="width:50%">🧭 补充地名航点</button>
     <button class="secondary" id="poiExportBtn" style="width:50%;display:none">⬇️ 下载含地名 GPX</button>
@@ -301,8 +301,7 @@
         state.result = res.j;
         state.projectId = res.j.project_id || null;
         render(res.j);
-        $('poiCard').style.display = 'none';
-        $('poiExportBtn').style.display = 'none';
+        showProjectPanels(true);
         loadHistory();
       })
       .catch(function (e) {
@@ -312,10 +311,23 @@
       });
   });
 
+  // 项目存在时，三个功能区块的入口必须始终可见；
+  // 只有「结果」按数据有无显示。此前把按钮放在隐藏卡片里，导致功能完全点不到。
+  function showProjectPanels(hasProject) {
+    var disp = hasProject ? 'block' : 'none';
+    $('poiCard').style.display = disp;
+    $('guideCard').style.display = disp;
+    if (!hasProject) return;
+    $('poiExportBtn').style.display = 'none';
+    $('chatWrap').style.display = 'none';
+    $('guideOut').style.display = 'none';
+  }
+
   function render(res) {
     var s = res.summary || {};
     $('resultCard').style.display = 'block';
     $('wpCard').style.display = 'block';
+    showProjectPanels(true);
 
     var parts = [];
     if (s.date) parts.push('日期 ' + s.date);
@@ -683,8 +695,7 @@
           state.result = { gpx: d.gpx, filename: (d.name || 'track') + '.gpx', summary: d.summary };
           state.projectId = d.id;
           render(state.result);
-          $('poiCard').style.display = 'none';
-          $('poiExportBtn').style.display = 'none';
+          showProjectPanels(true);
           pollPois();
           loadHistory();
         })
@@ -722,6 +733,7 @@
             state.projectId = null;
             $('resultCard').style.display = 'none';
             $('wpCard').style.display = 'none';
+            showProjectPanels(false);
           }
           loadHistory();
         })

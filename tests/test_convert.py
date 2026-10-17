@@ -589,6 +589,77 @@ class TestTurnDetection:
         assert describe_turn(t) == "直行", f"抖动被误判为转向: {t}"
 
 
+class TestTurnSignificance:
+    """全局筛选：抑制石头绕行与左右横穿，只留真正的路线决策点。"""
+
+    class _N:
+        def __init__(self, km, turn):
+            self.km = km
+            self.turn = turn
+            self.turn_text = ""
+
+    def _pick(self, pairs):
+        from app.kml_naming import pick_significant_turns
+        names = [self._N(km, t) for km, t in pairs]
+        return pick_significant_turns(names)
+
+    def test_small_turns_dropped(self):
+        assert self._pick([(1.0, 30.0), (2.0, 45.0)]) == set()
+
+    def test_isolated_big_turn_kept(self):
+        assert self._pick([(0.5, 5.0), (3.0, 85.0), (6.0, 5.0)]) == {1}
+
+    def test_left_right_oscillation_dropped(self):
+        """一左一右幅度相近 = 在找路，不是拐弯，两个都丢。"""
+        assert self._pick([(2.0, 90.0), (2.2, -85.0)]) == set()
+
+    def test_oscillation_needs_close_distance(self):
+        """隔得够远的左右转是两次真实决策，都保留。"""
+        assert self._pick([(1.0, 90.0), (5.0, -85.0)]) == {0, 1}
+
+    def test_oscillation_needs_similar_magnitude(self):
+        """一强一弱的反向不算反复（弱的可能只是过弯微调）。"""
+        assert self._pick([(2.0, 120.0), (2.2, -20.0)]) == {0}
+
+    def test_same_direction_merged_keeps_strongest(self):
+        out = self._pick([(2.0, 70.0), (2.1, 110.0)])
+        assert out == {1}, "300m 内同向应合并，保留更强者"
+
+    def test_far_same_direction_kept(self):
+        assert self._pick([(1.0, 70.0), (3.0, 100.0)]) == {0, 1}
+
+    def test_no_km_skipped(self):
+        from app.kml_naming import pick_significant_turns
+        n = self._N(None, 120.0)
+        assert pick_significant_turns([n]) == set()
+
+    def test_real_sample_turn_count_is_sane(self):
+        """真实样本：11km 环线不应刷出几十个转向。"""
+        from app.kml_processor import parse_kml_bytes
+        from app.kml_naming import name_waypoints, track_stats
+        r = parse_kml_bytes(sample_kml_bytes())
+        pts = r.tracks[0].points
+        names = name_waypoints(r, pts, track_stats(pts))
+        with_turn = [n for n in names if n.turn_text]
+        assert len(with_turn) <= 8, f"转向过多（{len(with_turn)}），说明筛选没生效"
+        assert len(with_turn) >= 1, "也不该一个都没有"
+
+    def test_longer_span_smooths_scrambling(self):
+        """同样的抖动轨迹，长基线比短基线的转向更少、更稳定。"""
+        from app.kml_naming import track_stats, turn_at
+        pts = []
+        for i in range(200):
+            jitter = 0.00004 if i % 3 == 0 else (-0.00004 if i % 3 == 1 else 0)
+            pts.append(type("P", (), {"lat": 24.0 + i * 0.00022, "lon": 113.0 + jitter,
+                                      "ele": 100.0})())
+        stats = track_stats(pts)
+        short = [turn_at(pts, stats, i, span_m=50) for i in range(20, 180, 10)]
+        long = [turn_at(pts, stats, i, span_m=120) for i in range(20, 180, 10)]
+        big_short = sum(1 for t in short if t is not None and abs(t) >= 60)
+        big_long = sum(1 for t in long if t is not None and abs(t) >= 60)
+        assert big_long <= big_short
+
+
 class TestTurnInSummaryAndPrompt:
     def test_summary_has_turn_fields(self):
         from app.kml_processor import KmlPoint

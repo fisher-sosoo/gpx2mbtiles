@@ -66,6 +66,15 @@ TURN_MIN_DEG = 50.0
 # 120° 以上基本只有发卡弯与折返
 HAIRPIN_DEG = 120.0
 
+# 转向基线：用「前后各 120m 的净方向变化」而不是 ±50m。
+# 实测 ±50m 会把密林里绕石头、走错再折回都算成转向，整段上坡刷出一堆假标记。
+TURN_SPAN_M = 120.0
+# 只有达到这个幅度才算「需要提示的转向」；更小的视为地形绕行
+TURN_SIGNIFICANT_DEG = 60.0
+# 左右反复的判定窗口与合并距离：短距离内一左一右基本等于「在找路」而非决策点
+TURN_OSC_WINDOW_KM = 0.45
+TURN_MERGE_KM = 0.30
+
 
 def bearing_deg(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
     """从 a 指向 b 的方位角：0=正北，顺时针增大。"""
@@ -139,6 +148,53 @@ def describe_turn(turn: float | None) -> str:
     if abs(turn) >= HAIRPIN_DEG:
         return f"发卡弯{side}{abs(turn):.0f}°"
     return f"{side}转{abs(turn):.0f}°"
+
+
+def pick_significant_turns(names) -> set:
+    """从整条航点序列里挑出「显著转向」的下标集合。
+
+    逐点判断没有全局观：密林里绕石头是左右横穿，走错路又折回是 180° 往返，
+    这些都不是路线决策点。三步筛选：
+
+    1. 幅度门槛：|转角| 不足 60° 的不算。
+    2. 邻近同向合并：300m 内同方向的只留最强的一次。
+    3. 左右反复抑制：450m 内出现反向且幅度相近的，两个都丢掉
+       —— 一左一右等于净方向没变，那是找路，不是拐弯。
+    """
+    cands = []
+    for i, n in enumerate(names):
+        if n.turn is None or n.km is None:
+            continue
+        if abs(n.turn) < TURN_SIGNIFICANT_DEG:
+            continue
+        cands.append([i, n.km, n.turn])
+
+    # 2) 邻近同向合并
+    merged = []
+    for c in sorted(cands, key=lambda x: x[1]):
+        last = merged[-1] if merged else None
+        if (last and c[1] - last[1] <= TURN_MERGE_KM
+                and (c[2] > 0) == (last[2] > 0)):
+            if abs(c[2]) > abs(last[2]):
+                merged[-1] = c
+            continue
+        merged.append(c)
+
+    # 3) 左右反复抑制
+    keep = []
+    for i, (idx, km, turn) in enumerate(merged):
+        noisy = False
+        for j, (_, km2, turn2) in enumerate(merged):
+            if i == j:
+                continue
+            if (abs(km2 - km) <= TURN_OSC_WINDOW_KM
+                    and (turn > 0) != (turn2 > 0)
+                    and abs(turn2) >= abs(turn) * 0.5):
+                noisy = True
+                break
+        if not noisy:
+            keep.append(idx)
+    return set(keep)
 
 
 def track_stats(points) -> TrackStats:
@@ -398,7 +454,7 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
             km = along_distance_m(track_points, stats, point) / 1000.0
             idx = index.nearest(point.lat, point.lon)
             elapsed = waypoint_elapsed(point, track_points, idx)
-            turn = turn_at(track_points, stats, idx)
+            turn = turn_at(track_points, stats, idx, span_m=TURN_SPAN_M)
 
         text, source = "", ""
         orig_name = _clean_note(point.name)
@@ -430,6 +486,13 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
                                 elapsed_s=elapsed, note=note,
                                 orig_name=orig_name, turn=turn,
                                 turn_text=describe_turn(turn)))
+
+    # 全局筛选：只有通过「幅度 + 合并 + 左右反复抑制」的才算显著转向。
+    # 未通过的把 turn_text 清空，避免 AI 拿石头绕行去编「右转切上山脊」。
+    significant = pick_significant_turns(out)
+    for i, n in enumerate(out):
+        if i not in significant:
+            n.turn_text = ""
     return out
 
 

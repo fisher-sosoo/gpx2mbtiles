@@ -345,6 +345,22 @@ def test_page_element_ids_all_exist(path):
     assert not missing, f"{path} 引用了不存在的元素: {missing}"
 
 
+def test_convert_panel_triggers_are_not_inside_hidden_cards():
+    """回归防护：功能入口不能被放进默认隐藏的卡片里。
+
+    历史事故：地名补点 / 行前指南的按钮被放在 display:none 的结果卡片中，
+    转换后卡片又被隐藏，导致用户完全看不到这两个功能。
+    """
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    # 必须有一个统一的显隐函数，且转换/打开项目后会调用它让入口可见
+    assert "showProjectPanels" in js, "缺少统一的区块显隐控制"
+    assert js.count("showProjectPanels(true)") >= 2, "转换与打开项目后都要让入口可见"
+    assert "showProjectPanels(false)" in js, "删除当前项目后应隐藏"
+    # 入口按钮不应再被单独 display:none 掉
+    assert "$('poiCard').style.display = 'none'" not in js or         "showProjectPanels(false)" in js
+
+
 def test_convert_page_has_conversational_curation():
     """对话修正面板要能接续上下文并展示执行结果。"""
     html = _read(CONVERT_PAGE)
