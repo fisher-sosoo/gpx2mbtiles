@@ -747,14 +747,28 @@ async def _run_junction_job(project_id: str, force: bool = False):
                 for i, p in enumerate(points)]
 
         bbox = _bbox_of(points, settings.poi_bbox_pad_m)
-        ways = await asyncio.to_thread(junction_finder.fetch_ways, bbox, settings)
-        junctions = junction_finder.find_junctions(pts3, ways)
+        cached = project_store.load_junctions(project_id)
+        degraded = ""
+        try:
+            ways = await asyncio.to_thread(junction_finder.fetch_ways,
+                                           bbox, settings)
+            junctions = junction_finder.find_junctions(pts3, ways)
+            way_count = len(ways)
+        except junction_finder.PoiQueryError as exc:
+            # 已有缓存时不要整体失败：路网是增强信息，退回上次结果继续重算转向
+            if not cached.get("junctions"):
+                raise
+            junctions = cached["junctions"]
+            way_count = cached.get("way_count") or 0
+            degraded = "沿用上次路网结果：%s" % exc
+            logger.warning("junction query failed, using cache: %s", exc)
 
         payload = {
             "fetched_at": time.time(),
             "bbox": [round(v, 6) for v in bbox],
-            "way_count": len(ways),
+            "way_count": way_count,
             "junctions": junctions,
+            "degraded": degraded,
         }
         project_store.save_junctions(project_id, payload)
 
@@ -767,7 +781,7 @@ async def _run_junction_job(project_id: str, force: bool = False):
             logger.warning("junction rebuild failed: %s", exc)
 
         job.update(status="done", count=len(junctions), refreshed=refreshed,
-                   way_count=len(ways))
+                   way_count=way_count, degraded=degraded)
     except junction_finder.PoiQueryError as exc:
         job.update(status="failed", error=str(exc))
     except Exception as exc:
@@ -837,6 +851,7 @@ async def get_junctions(project_id: str):
         "way_count": data.get("way_count"),
         "error": job.get("error") or "",
         "refreshed": job.get("refreshed"),
+        "degraded": data.get("degraded") or job.get("degraded") or "",
         "junctions": data.get("junctions") or [],
     }
 
