@@ -85,8 +85,9 @@ def haversine_m(a_lat, a_lon, b_lat, b_lon) -> float:
 def build_query(bbox, timeout_s: int) -> str:
     s, w, n, e = bbox
     box = f"{s:.6f},{w:.6f},{n:.6f},{e:.6f}"
-    # 只用 out tags：节点本身带坐标，不需要几何。
-    # 之前统一用 out geom，把水域面的全部顶点也拉了回来，实测查询从 42 秒涨到 2 分钟以上。
+    # out body：节点会带上 lat/lon，但不含 way 的几何 —— 这是速度与可用的平衡点。
+    # 注意 out tags **不带坐标**（会导致所有点被判定无效）；
+    # out geom 又会把水域面的全部顶点拉回来（实测把 42 秒拖成 2 分钟以上）。
     return (
         f"[out:json][timeout:{timeout_s}];\n(\n"
         f'  node["natural"="saddle"]({box});\n'
@@ -97,7 +98,7 @@ def build_query(bbox, timeout_s: int) -> str:
         f'  node["amenity"="shelter"]({box});\n'
         f'  node["tourism"="viewpoint"]["name"]({box});\n'
         f'  node["place"~"^(town|village|hamlet|isolated_dwelling)$"]({box});\n'
-        ");\nout tags;"
+        ");\nout body;"
     )
 
 

@@ -32,7 +32,8 @@ class TestQuery:
                        'natural"="water', "camp_site", "shelter", 'place"~'):
             assert needle in q, f"节点查询缺少: {needle}"
         assert "28.280000,100.290000,28.460000,100.570000" in q
-        assert "out tags" in q
+        assert "out body" in q, "节点查询必须用 out body（out tags 不带坐标）"
+        assert "out tags" not in q, "out tags 不返回坐标，会让所有点失效"
         assert "out geom" not in q, "主查询不该再拉几何（会慢一个数量级）"
 
     def test_ways_query_only_for_rivers(self):
