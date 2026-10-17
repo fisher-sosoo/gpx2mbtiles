@@ -483,3 +483,125 @@ async def test_submit_accepts_kml(client):
     s = await _poll_status(client, resp.json()["task_id"])
     assert s["status"] == COMPLETED
     assert s["total_tiles"] >= 1
+
+
+# ---------------------------------------------------------------- 项目空间
+
+def _sample_kml():
+    from tests.conftest import make_kml
+    return make_kml(track_times=[
+        (113.0, 24.0, 100, "2023-02-18T02:00:00Z"),
+        (113.01, 24.01, 200, "2023-02-18T02:30:00Z"),
+        (113.02, 24.02, 300, "2023-02-18T03:00:00Z")],
+        doc_name="2023-02-18 测试环线")
+
+
+async def test_convert_saves_project(client):
+    """每次转换都落成项目，返回 project_id。"""
+    kml = _sample_kml()
+    resp = await client.post("/api/convert",
+                             files={"file": ("x.kml", kml.encode(), "application/xml")})
+    assert resp.status_code == 200
+    pid = resp.json()["project_id"]
+    assert len(pid) == 32
+
+    lst = (await client.get("/api/projects")).json()
+    assert lst["total"] == 1
+    assert lst["items"][0]["id"] == pid
+    assert lst["items"][0]["status"] == "completed"
+
+
+async def test_project_detail_and_gpx(client):
+    kml = _sample_kml()
+    pid = (await client.post("/api/convert",
+            files={"file": ("x.kml", kml.encode(), "application/xml")})).json()["project_id"]
+    d = (await client.get(f"/api/projects/{pid}")).json()
+    assert d["point_count"] == 3
+    assert d["summary"]["tracks"][0]["points"] == 3
+    assert "<gpx" in d["gpx"]
+    assert d["gpx_available"] is True
+    assert d["input_available"] is True
+
+
+async def test_project_delete(client, settings):
+    from pathlib import Path
+    kml = _sample_kml()
+    pid = (await client.post("/api/convert",
+            files={"file": ("x.kml", kml.encode(), "application/xml")})).json()["project_id"]
+    d = Path(settings.data_dir) / "projects" / pid
+    assert d.is_dir()
+    r = await client.delete(f"/api/projects/{pid}")
+    assert r.status_code == 200
+    assert not d.exists()
+    assert (await client.get(f"/api/projects/{pid}")).status_code == 404
+    assert (await client.delete(f"/api/projects/{pid}")).status_code == 404
+
+
+async def test_project_reconvert(client):
+    """用保存的原件重转，生成新项目并保留旧项目。"""
+    kml = _sample_kml()
+    pid = (await client.post("/api/convert",
+            files={"file": ("x.kml", kml.encode(), "application/xml")})).json()["project_id"]
+    r = await client.post(f"/api/projects/{pid}/reconvert",
+                          data={"track_name": "改过的名字"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["project_id"] != pid
+    assert j["reconverted_from"] == pid
+    assert j["summary"]["tracks"][0]["name"] == "改过的名字"
+    lst = (await client.get("/api/projects")).json()
+    assert lst["total"] == 2, "重转应保留旧项目"
+
+
+async def test_project_download(client):
+    kml = _sample_kml()
+    pid = (await client.post("/api/convert",
+            files={"file": ("x.kml", kml.encode(), "application/xml")})).json()["project_id"]
+    r = await client.get(f"/api/projects/{pid}/download")
+    assert r.status_code == 200
+    assert r.text.startswith("<?xml")
+    assert "<gpx" in r.text
+
+
+async def test_project_prune_by_limit(client, settings, monkeypatch):
+    """超过条数上限时淘汰最旧的。"""
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod.project_store.settings, "max_projects", 2)
+    ids = []
+    for i in range(4):
+        kml = _sample_kml()
+        r = await client.post("/api/convert",
+                              files={"file": (f"x{i}.kml", kml.encode(), "application/xml")})
+        ids.append(r.json()["project_id"])
+    lst = (await client.get("/api/projects")).json()
+    assert lst["total"] <= 2, f"应淘汰到上限内，实得 {lst['total']}"
+    assert ids[-1] in [it["id"] for it in lst["items"]], "最新的必须保留"
+
+
+async def test_projects_404(client):
+    assert (await client.get("/api/projects/deadbeef")).status_code == 404
+    assert (await client.get("/api/projects/deadbeef/download")).status_code == 404
+
+
+class TestProjectStoreUnit:
+    def test_save_and_read(self, settings):
+        from app.project_store import ProjectStore
+        from app.gpx_converter import convert
+        from tests.conftest import make_kml
+        store = ProjectStore(settings)
+        kml = make_kml(track_times=[(113.0, 24.0, 1, "2023-02-18T02:00:00Z"),
+                                    (113.1, 24.1, 2, "2023-02-18T02:10:00Z")],
+                       doc_name="2023-02-18 T")
+        res = convert(kml.encode(), "t.kml")
+        meta = store.save(source_bytes=kml.encode(), source_name="t.kml",
+                          ext=".kml", result=res, params={"ai_names": False})
+        assert meta["status"] == "completed"
+        got = store.get(meta["id"])
+        assert got["summary"]["tracks"][0]["points"] == 2
+    
+    def test_missing_project_raises(self, settings):
+        from app.project_store import ProjectNotFoundError, ProjectStore
+        store = ProjectStore(settings)
+        import pytest as _pytest
+        with _pytest.raises(ProjectNotFoundError):
+            store.get("nope")

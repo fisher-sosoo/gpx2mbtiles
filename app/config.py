@@ -120,6 +120,12 @@ class Settings:
         self.ai_model = os.getenv("AI_MODEL", "deepseek-chat").strip()
         self.ai_timeout_seconds = _env_float("AI_TIMEOUT_SECONDS", 30.0, 3.0, 180.0)
         self.ai_max_tokens = _env_int("AI_MAX_TOKENS", 2000, 200, 8192)
+
+        # ---- 项目空间（每次转换落一个目录 + 一条账本记录）----
+        # 超出条数或超过保留天数时按最久未访问淘汰；原件最小，产物是 GPX 文本，
+        # 单项目通常几十 KB，200 个项目也就几 MB。
+        self.max_projects = _env_int("MAX_PROJECTS", 200, 0, 10000)
+        self.project_retention_days = _env_int("PROJECT_RETENTION_DAYS", 30, 0, 3650)
         # 墙内服务器访问模型 API 必须走代理；为空时复用 TILE_PROXY
         self.ai_proxy = os.getenv("AI_PROXY", "").strip()
         # 低于此剩余空间时停止写缓存（默认 3GB；8G 缓存 + 3G 余量，40G 盘安全）

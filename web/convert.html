@@ -56,6 +56,16 @@
   .src.note { background:#3a2a1d; color:var(--warn); }
   .summary-line { font-size:12.5px; color:var(--muted); line-height:1.6; margin-bottom:8px; }
   .warn-line { color:var(--warn); font-size:12.5px; margin-top:8px; line-height:1.6; }
+  .hist-item { border:1px solid var(--line); border-radius:10px; padding:10px 11px;
+               margin-bottom:8px; background:#0f1822; }
+  .hist-item.cur { border-color:var(--accent); }
+  .hist-main { font-size:13.5px; color:#fff; word-break:break-all; margin-bottom:4px; }
+  .hist-meta { font-size:11.5px; color:var(--muted); line-height:1.6; }
+  .hist-actions { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .hist-btn { border:0; border-radius:8px; padding:6px 11px; font-size:12px; font-weight:600;
+              cursor:pointer; margin:0; width:auto; background:#243547; color:#cfe1f2; }
+  .hist-btn.go { background:var(--accent); color:#06233f; }
+  .hist-btn.del { background:#5b2a2a; color:#ffc9c9; }
 </style>
 </head>
 <body>
@@ -119,17 +129,25 @@
 </div>
 
 <div class="card">
+  <h2>4 · 历史项目 <span class="hint" id="historyTotal" style="font-weight:400"></span></h2>
+  <div class="hint" style="margin-bottom:10px">
+    每次转换都会存成一个项目：原件、GPX 与摘要都在里面，可以回看、改参数重转、删除。
+  </div>
+  <div id="historyList"><div class="hint">加载中…</div></div>
+</div>
+
+<div class="card">
   <div class="hint">
     · 航点命名优先级：文件里的名称 → 用户备注 → 所在位置（里程 + 累计耗时）→ 照片文件名。<br>
     · 累计耗时是从轨迹起点算起的时长，不是钟点，因此不受时区影响。<br>
-    · 转换结果不保存到服务器，刷新页面即丢弃。
+    · 项目默认保留 30 天或最近 200 个，超出后按最久未用淘汰。
   </div>
 </div>
 
 <script>
 (function () {
   var API_KEY = localStorage.getItem('gpx2mbtiles_key') || '';
-  var state = { file: null, result: null };
+  var state = { file: null, result: null, projectId: null };
 
   var SRC_LABEL = {
     position: '所在位置',
@@ -224,7 +242,9 @@
         btn.textContent = '🔄 转换为 GPX';
         if (!res.ok) { showErr('转换失败：' + (res.j.detail || JSON.stringify(res.j))); return; }
         state.result = res.j;
+        state.projectId = res.j.project_id || null;
         render(res.j);
+        loadHistory();
       })
       .catch(function (e) {
         btn.disabled = false;
@@ -300,6 +320,130 @@
       body.appendChild(tr);
     });
   }
+
+  // ---------- 历史项目 ----------
+  function fmtTime(ts) {
+    var d = new Date(ts * 1000);
+    function p(n) { return ('0' + n).slice(-2); }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+      ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function loadHistory() {
+    apiFetch('/api/projects?limit=30')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var list = $('historyList');
+        list.innerHTML = '';
+        $('historyTotal').textContent = j.total ? '（共 ' + j.total + ' 个）' : '';
+        if (!j.items || !j.items.length) {
+          list.innerHTML = '<div class="hint">还没有历史项目</div>';
+          return;
+        }
+        j.items.forEach(function (it) {
+          var row = document.createElement('div');
+          row.className = 'hist-item' + (it.id === state.projectId ? ' cur' : '');
+          var meta = [
+            fmtTime(it.created_at),
+            it.point_count + ' 个点',
+            it.waypoint_count + ' 个航点',
+            (it.distance_m / 1000).toFixed(2) + ' km'
+          ];
+          if (it.ai_used) meta.push('AI ' + it.ai_named + ' 个');
+          var head = document.createElement('div');
+          head.className = 'hist-main';
+          head.textContent = it.name || '(未命名)';
+          var sub = document.createElement('div');
+          sub.className = 'hist-meta';
+          sub.textContent = meta.join(' · ');
+          var acts = document.createElement('div');
+          acts.className = 'hist-actions';
+          acts.innerHTML =
+            '<button class="hist-btn go" data-act="open">打开</button>' +
+            '<button class="hist-btn" data-act="reai">重转(带AI)</button>' +
+            '<button class="hist-btn" data-act="dl">下载</button>' +
+            '<button class="hist-btn del" data-act="del">删除</button>';
+          acts.addEventListener('click', function (ev) {
+            var b = ev.target.closest('.hist-btn');
+            if (!b) return;
+            handleHistoryAction(b.getAttribute('data-act'), it);
+          });
+          row.appendChild(head); row.appendChild(sub); row.appendChild(acts);
+          list.appendChild(row);
+        });
+      })
+      .catch(function () {
+        $('historyList').innerHTML = '<div class="hint">历史加载失败</div>';
+      });
+  }
+
+  function handleHistoryAction(act, it) {
+    if (act === 'open') {
+      apiFetch('/api/projects/' + it.id)
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.gpx) { showErr('该项目的 GPX 已被清理，请重转'); return; }
+          state.result = { gpx: d.gpx, filename: (d.name || 'track') + '.gpx', summary: d.summary };
+          state.projectId = d.id;
+          render(state.result);
+          loadHistory();
+        })
+        .catch(function (e) { showErr('打开失败：' + e); });
+    } else if (act === 'dl') {
+      if (!ensureKey()) return;
+      window.location.href = withToken('/api/projects/' + it.id + '/download');
+    } else if (act === 'reai') {
+      clearErr();
+      $('convertBtn').disabled = true;
+      $('convertBtn').textContent = '⏳ 重转中…';
+      var fd = new FormData();
+      fd.append('ai_names', 'true');
+      apiFetch('/api/projects/' + it.id + '/reconvert', { method: 'POST', body: fd })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          $('convertBtn').disabled = false;
+          $('convertBtn').textContent = '🔄 转换为 GPX';
+          if (!res.ok) { showErr('重转失败：' + (res.j.detail || '')); return; }
+          state.result = res.j;
+          state.projectId = res.j.project_id;
+          render(res.j);
+          loadHistory();
+        })
+        .catch(function (e) {
+          $('convertBtn').disabled = false;
+          $('convertBtn').textContent = '🔄 转换为 GPX';
+          showErr('重转失败：' + e);
+        });
+    } else if (act === 'del') {
+      if (!confirm('删除这个项目？原件与 GPX 都会删掉。')) return;
+      apiFetch('/api/projects/' + it.id, { method: 'DELETE' })
+        .then(function () {
+          if (state.projectId === it.id) {
+            state.projectId = null;
+            $('resultCard').style.display = 'none';
+            $('wpCard').style.display = 'none';
+          }
+          loadHistory();
+        })
+        .catch(function (e) { showErr('删除失败：' + e); });
+    }
+  }
+
+  function ensureKey() {
+    if (API_KEY) return true;
+    var k = prompt('请输入服务端 API Key（AUTH_TOKEN）：', '');
+    if (k === null) return false;
+    API_KEY = k.trim();
+    localStorage.setItem('gpx2mbtiles_key', API_KEY);
+    return !!API_KEY;
+  }
+
+  function withToken(url) {
+    var sep = url.indexOf('?') >= 0 ? '&' : '?';
+    return url + sep + 'token=' + encodeURIComponent(API_KEY);
+  }
+
+  loadHistory();
 
   // ---------- 下载 ----------
   $('downloadBtn').addEventListener('click', function () {

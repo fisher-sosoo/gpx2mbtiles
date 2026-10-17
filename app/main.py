@@ -13,6 +13,7 @@ from .gpx_converter import convert
 from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
+from .project_store import ProjectNotFoundError, ProjectStore
 from .task_manager import (COMPLETED, TaskLimitError, TaskManager,
                            TaskNotFoundError)
 from .tile_cache import TileCache, valid_xyz
@@ -27,19 +28,23 @@ logger = logging.getLogger("gpx2mbtiles")
 settings = get_settings()
 manager: TaskManager
 tile_cache: TileCache
+project_store: ProjectStore
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global manager, tile_cache
+    global manager, tile_cache, project_store
     manager = TaskManager(settings)
     manager.start()
     tile_cache = TileCache(settings)
+    project_store = ProjectStore(settings)
     cleanup_task = asyncio.create_task(manager.cleanup_loop())
     app.state.manager = manager
     app.state.tile_cache = tile_cache
+    app.state.project_store = project_store
     logger.info("gpx2mbtiles started: data_dir=%s max_running=%d interval=%dms",
                 settings.data_dir, settings.max_running_tasks, settings.request_interval_ms)
+    project_store.prune()
     yield
     cleanup_task.cancel()
     try:
@@ -376,7 +381,7 @@ async def convert_track(
     filename: str = Form(""),
     ai_names: bool = Form(False),
 ):
-    """KML/KMZ → 命名整理过的 GPX（无状态，不建任务）。
+    """KML/KMZ → 命名整理过的 GPX，并落成一个项目空间（可回看/重转/删除）。
 
     ai_names=true 时额外调用一次模型给航点起语义名称；失败自动回退，不影响转换。
     """
@@ -401,11 +406,108 @@ async def convert_track(
                          ai_names=want_ai, settings=settings)
     except KmlParseError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    ext = ".kmz" if name.lower().endswith(".kmz") else ".kml"
+    project = project_store.save(
+        source_bytes=data, source_name=name, ext=ext, result=result,
+        params={"track_name": track_name.strip(), "ai_names": want_ai},
+    )
     return {
         "gpx": result.gpx,
         "filename": result.filename,
         "summary": result.summary.to_dict(),
+        "project_id": project["id"],
     }
+
+
+# ---------------------------------------------------------------- 项目历史
+# 每次转换都是一个项目：原件 + 产物 GPX + 摘要都在 data/projects/<id>/ 下，
+# 账本在 projects.db。支持回看、带新参数重转、删除。
+
+
+@app.get("/api/projects", dependencies=[Depends(require_api_key)])
+async def list_projects(limit: int = 50, offset: int = 0):
+    """历史转换列表（按时间倒序）。"""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    return project_store.list(limit=limit, offset=offset)
+
+
+@app.get("/api/projects/{project_id}", dependencies=[Depends(require_api_key)])
+async def get_project(project_id: str):
+    """项目详情：元数据 + 摘要 + GPX 文本，便于直接回看。"""
+    try:
+        meta = project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    gpx = ""
+    if meta.get("gpx_available"):
+        try:
+            gpx = project_store.read_gpx(project_id)
+        except ProjectNotFoundError:
+            gpx = ""
+    return {**meta, "gpx": gpx}
+
+
+@app.delete("/api/projects/{project_id}", dependencies=[Depends(require_api_key)])
+async def delete_project(project_id: str):
+    """删除项目（含目录下的原件与产物）。"""
+    if not project_store.delete(project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"deleted": project_id}
+
+
+@app.post("/api/projects/{project_id}/reconvert",
+          dependencies=[Depends(require_api_key)])
+async def reconvert_project(project_id: str,
+                            track_name: str = Form(""),
+                            ai_names: bool = Form(False)):
+    """用保存的原件重新转换，生成一个新项目（旧项目保留，便于对比）。"""
+    try:
+        meta = project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    ext = meta.get("ext") or ".kml"
+    src = project_store.input_path(project_id, ext)
+    if not src.is_file():
+        raise HTTPException(status_code=410, detail="原件已被清理，无法重转")
+    data = src.read_bytes()
+    want_ai = (ai_names if isinstance(ai_names, bool)
+               else str(ai_names).strip().lower() in ("1", "true", "yes", "on"))
+    name = meta.get("source_name") or f"project{ext}"
+    try:
+        result = convert(data, name, track_name.strip(),
+                         ai_names=want_ai, settings=settings)
+    except KmlParseError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    project = project_store.save(
+        source_bytes=data, source_name=name, ext=ext, result=result,
+        params={"track_name": track_name.strip(), "ai_names": want_ai,
+                "from_project": project_id},
+    )
+    return {
+        "gpx": result.gpx,
+        "filename": result.filename,
+        "summary": result.summary.to_dict(),
+        "project_id": project["id"],
+        "reconverted_from": project_id,
+    }
+
+
+@app.get("/api/projects/{project_id}/download",
+         dependencies=[Depends(require_api_key)])
+async def download_project(project_id: str):
+    """下载项目产物 GPX。"""
+    try:
+        meta = project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    path = project_store.output_path(project_id)
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="产物已被清理，请重新转换")
+    fname = meta.get("name") or project_id
+    return FileResponse(path=str(path), media_type="application/gpx+xml",
+                        filename=f"{_safe_name(fname)}.gpx")
 
 
 def _safe_name(name: str) -> str:

@@ -104,6 +104,8 @@ def settings(tmp_path, monkeypatch, tile_server_url):
     monkeypatch.setenv("BLOCK_FAIL_RATIO", "0.5")
     monkeypatch.setenv("BLOCK_CONSECUTIVE_THRESHOLD", "2")
     monkeypatch.setenv("MAX_TILES_PER_TASK", "50000")
+    monkeypatch.setenv("MAX_PROJECTS", "200")
+    monkeypatch.setenv("PROJECT_RETENTION_DAYS", "30")
 
     # 重新加载配置与 app（env 变化后重建缓存）
     from app import config
@@ -120,6 +122,9 @@ async def app(settings, monkeypatch):
     monkeypatch.setattr(main_mod, "settings", settings)
     manager = TaskManager(settings)
     main_mod.manager = manager
+    # 测试绕过 lifespan，项目账本要在这里手动建
+    from app.project_store import ProjectStore
+    main_mod.project_store = ProjectStore(settings)
     cleanup_task = asyncio.create_task(manager.cleanup_loop())
     yield main_mod.app
     cleanup_task.cancel()

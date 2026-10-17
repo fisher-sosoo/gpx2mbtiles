@@ -273,6 +273,10 @@ def test_convert_page_exists_and_has_features():
         "name_sources",              # 命名来源统计
         "累计耗时",                   # 航点表头
         "里程",                       # 航点表头
+        "/api/projects",             # 历史项目列表
+        "loadHistory",               # 历史加载
+        "reconvert",                 # 重转
+        "historyTotal",              # 历史计数
     ):
         assert snippet in html, f"转换页缺少要素: {snippet}"
 
@@ -297,6 +301,18 @@ def test_convert_page_does_not_call_task_api():
     js = _extract_inline_js(_read(CONVERT_PAGE))
     assert "/api/submit" not in js
     assert "/api/estimate" not in js
+
+
+def test_convert_page_has_project_history():
+    """历史项目要能回看、重转、删除。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    for snippet in ('data-act="open"', 'data-act="reai"',
+                    'data-act="dl"', 'data-act="del"'):
+        assert snippet in html, f"历史项缺少操作: {snippet}"
+    assert "DELETE" in js, "缺少删除调用"
+    assert "/reconvert" in js, "缺少重转调用"
+    assert "/download" in js, "缺少下载调用"
 
 
 def test_convert_page_linked_from_all_pages():
