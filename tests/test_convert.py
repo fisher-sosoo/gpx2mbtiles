@@ -194,6 +194,33 @@ class TestNamingPriority:
         assert wp["source"] == "note"
         assert "这里风很大" in wp["name"]
 
+    def test_note_name_is_only_seq_plus_note(self):
+        """备注最优先：名字只留序号 + 备注，不再拼里程/耗时。"""
+        s = self._convert_one(note="左转进小路", file_id="999")
+        wp = s["waypoints"][0]
+        assert wp["name"] == "#01 左转进小路"
+        assert "km" not in wp["name"]
+        # 名字里不应出现 h:mm 形式的耗时
+        assert not __import__("re").search(r"\d+:\d{2}", wp["name"])
+
+    def test_note_written_into_desc_and_cmt(self):
+        """备注除了当名字，还要进 desc 与 cmt，只读描述的 App 也看得到。"""
+        from xml.etree import ElementTree as ET
+        track = [(113.0, 24.0, 100, "2023-02-18T02:00:00Z"),
+                 (113.01, 24.01, 200, "2023-02-18T02:30:00Z"),
+                 (113.02, 24.02, 300, "2023-02-18T03:00:00Z")]
+        kml = make_kml(track_times=track, waypoints=[dict(
+            lat=24.01, lon=113.01, ele=200,
+            desc_time="2023-02-18 10:30:00", note="沿溪流右转，注意湿滑石头")])
+        r = convert(kml.encode("utf-8"), "x.kml")
+        ns = {"g": "http://www.topografix.com/GPX/1/1"}
+        w = ET.fromstring(r.gpx).find("g:wpt", ns)
+        assert w.find("g:name", ns).text == "#01 沿溪流右转，注意湿滑石头"
+        desc = w.find("g:desc", ns).text
+        assert "备注：沿溪流右转，注意湿滑石头" in desc
+        assert "已走" in desc and "海拔" in desc
+        assert w.find("g:cmt", ns).text == "沿溪流右转，注意湿滑石头"
+
     def test_attachment_json_is_not_a_note(self):
         """attach 那种 JSON 串不能被当成人类备注。"""
         s = self._convert_one(note='[{"fileSize":"0","fileId":"1"}]', file_id="999")

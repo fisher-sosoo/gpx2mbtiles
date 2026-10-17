@@ -251,23 +251,28 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
     for point, named in zip(result.waypoints, wp_names):
         elapsed = named.elapsed_s
         desc_lines = []
+        # 备注写进 desc：只展示描述字段的 App 也能看到用户写的话
+        if named.note:
+            desc_lines.append(f"备注：{named.note}")
         if named.km is not None:
             desc_lines.append(f"已走 {naming.fmt_distance(named.km)}")
         if elapsed is not None:
             desc_lines.append(f"累计 {naming.fmt_seconds(elapsed)}")
         if point.ele is not None:
             desc_lines.append(f"海拔 {int(round(point.ele))} m")
-        original = point.name or point.note
-        if original and original not in named.text:
-            desc_lines.append(f"原备注：{original}")
+        if named.orig_name and named.orig_name not in named.text:
+            desc_lines.append(f"原名称：{named.orig_name}")
         if point.attach_id:
             desc_lines.append(f"附件 ID：{point.attach_id}")
+        # cmt 放备注原文，方便在 App 的注释栏里直接读到
+        cmt = named.note or (named.orig_name
+                             if named.orig_name and named.orig_name not in named.text else "")
         doc.waypoint(
             lat=point.lat, lon=point.lon, ele=point.ele,
             time=point.desc_time or point.time,
             name=named.text,
             desc=" · ".join(desc_lines),
-            cmt=original if original and original not in named.text else "",
+            cmt=cmt,
             sym="Flag, Blue",
         )
         summary.waypoints.append({
@@ -276,6 +281,7 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
             "km": round(named.km, 2) if named.km is not None else None,
             "elapsed_s": round(elapsed) if elapsed is not None else None,
             "ele": round(point.ele, 1) if point.ele is not None else None,
+            "note": named.note,
         })
         summary.name_sources[named.source] = summary.name_sources.get(named.source, 0) + 1
 

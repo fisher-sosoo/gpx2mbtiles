@@ -27,9 +27,11 @@ DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_./](\d{1,2})[-_./](\d{1,2})(?!\d)"
 @dataclass
 class WaypointName:
     text: str
-    source: str          # name / note / attach / position / misc
+    source: str          # name / note / attach / position / ai / time
     km: float | None = None
     elapsed_s: float | None = None
+    note: str = ""       # 用户备注原文（有则写进 desc 与 cmt）
+    orig_name: str = ""  # 源文件里的 <name>，用于追溯
 
 
 @dataclass
@@ -315,12 +317,14 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
             elapsed = waypoint_elapsed(point, track_points, idx)
 
         text, source = "", ""
-        if point.name:
-            text, source = _clean_note(point.name), "name"
-        if not text:
-            note = _readable_note(point.note)
-            if note:
-                text, source = note, "note"
+        orig_name = _clean_note(point.name)
+        note = _readable_note(point.note)
+        if orig_name:
+            text, source = orig_name, "name"
+        if not text and note:
+            # 备注最优先：用户亲手写的判断比任何推测都准。
+            # 名称只用「序号 + 备注」，不再拼里程/耗时 —— 那些在 desc 里。
+            text, source = note, "note"
         if not text:
             # 位置名称排第三：照片文件名/附件 id 对「走到哪了」没有帮助，
             # 只有连位置都算不出来时才退回到附件名。
@@ -338,7 +342,8 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
             source = "time"
 
         full = _dedupe(f"{seq} {text}", used)
-        out.append(WaypointName(text=full, source=source, km=km, elapsed_s=elapsed))
+        out.append(WaypointName(text=full, source=source, km=km,
+                                elapsed_s=elapsed, note=note, orig_name=orig_name))
     return out
 
 
