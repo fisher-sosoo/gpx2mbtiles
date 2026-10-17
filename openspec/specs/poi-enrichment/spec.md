@@ -1,11 +1,10 @@
-# Spec Delta
+# poi-enrichment Specification
 
 ## Purpose
-
 依据 OpenStreetMap 的公共地名数据，为一条轨迹补充「垭口、牛场、营地、山峰、湖泊、
 过河点」等有名字的航点，并按几何关系与重要性过滤，避免刷屏与误标。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 按区域查询地名
 
@@ -86,6 +85,8 @@
 
 ### Requirement: 去重与数量控制
 
+系统 SHALL 对同名地物去重，并限制单条轨迹补点的总数，避免刷屏。
+
 #### Scenario: 同名去重
 
 - **WHEN** 多个同名地物都被选中
@@ -98,6 +99,8 @@
 - **AND** SHALL 在结果中说明被截断的数量
 
 ### Requirement: 结果并入 GPX
+
+系统 SHALL 允许把地名点并入导出的 GPX，同时保持原有轨迹不变。
 
 #### Scenario: 作为附加航点
 
