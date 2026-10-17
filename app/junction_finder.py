@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 HIGHWAYS = "^(path|footway|track|steps|bridleway|service|residential|unclassified)$"
 JUNCTION_RADIUS_M = 25.0        # 判定半径
 JUNCTION_MERGE_POINTS = 8       # 连续判定点合并间隔（采样点个数）
-JUNCTION_TURN_TOL_M = 40.0      # 转向点离路口多近算「路口转向」
+# 转向点离路口多近算「路口转向」。
+# 实测：同一处决策点，路口采样点与航点能差 100~200 米（航点按固定里程取，
+# 路口按道路顶点取），40 米会全部漏掉，250 米才可靠。
+JUNCTION_TURN_TOL_M = 250.0
 _CELL = 0.0005                  # 网格单元，约 55 米
 M_PER_DEG_LAT = 111320.0
 

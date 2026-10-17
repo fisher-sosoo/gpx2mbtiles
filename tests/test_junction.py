@@ -117,6 +117,14 @@ class TestApplyJunctions:
         assert names[0].turn_kind == "junction"
         assert names[0].junction_ways == 3
 
+    def test_default_tolerance_covers_real_sampling_gap(self):
+        """真实数据里路口与航点能差 170 米左右，默认容差必须覆盖。"""
+        names = self._names()          # 航点在 km=0.100 (100 m)
+        js_far = [{"lat": 24.0, "lon": 113.0, "way_count": 2, "distance_m": 400.0}]
+        assert kn.apply_junctions(names, js_far) == 0, "300m 超出默认容差"
+        js_near = [{"lat": 24.0, "lon": 113.0, "way_count": 2, "distance_m": -60.0}]
+        assert kn.apply_junctions(names, js_near) == 1, "160m 应在默认容差内"
+
     def test_turn_far_from_junction_is_terrain(self):
         names = self._names()
         js = [{"lat": 24.0, "lon": 113.0, "way_count": 3, "distance_m": 110.0}]

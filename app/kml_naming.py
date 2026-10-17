@@ -450,7 +450,7 @@ def _dedupe(base: str, used: set) -> str:
     return text
 
 
-def apply_junctions(names, junctions, tol_m: float = 40.0) -> int:
+def apply_junctions(names, junctions, tol_m: float = 250.0) -> int:
     """把落在路口附近的显著转向标成「路口转向」。
 
     按里程匹配（路口带的是沿轨迹累计距离），避免为了拿坐标去改航点数据结构。
@@ -483,7 +483,8 @@ def apply_junctions(names, junctions, tol_m: float = 40.0) -> int:
 
 
 def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
-                   pad: int = 2, junctions=None, junction_tol_m: float = 40.0) -> list:
+                   pad: int = 2, junctions=None,
+                   junction_tol_m: float = 250.0) -> list:
     """给普通航点取名，返回与 result.waypoints 等长的命名结果。"""
     index = _TrackIndex(track_points, stats) if track_points else None
     out = []
