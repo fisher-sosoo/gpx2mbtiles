@@ -650,8 +650,12 @@ async def export_project_with_pois(project_id: str):
     if cached and cached.get("items"):
         gpx_text = _merge_pois_into_gpx(gpx_text, cached["items"])
     fname = f"{_safe_name(meta.get('name') or project_id)}.gpx"
+    # 文件名常含中文，HTTP 头只能是 latin-1，必须按 RFC 5987 做 UTF-8 百分号编码
+    from urllib.parse import quote
+    disposition = ("attachment; filename=track.gpx; filename*=UTF-8''"
+                   + quote(fname))
     return Response(content=gpx_text, media_type="application/gpx+xml",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+                    headers={"Content-Disposition": disposition})
 
 
 @app.get("/api/projects/{project_id}/download",

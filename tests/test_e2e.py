@@ -553,6 +553,39 @@ async def test_project_reconvert(client):
     assert lst["total"] == 2, "重转应保留旧项目"
 
 
+async def test_project_export_handles_chinese_filename(client):
+    """导出要能正确处理中文文件名（HTTP 头不能放非 latin-1 字符）。"""
+    kml = _sample_kml()
+    pid = (await client.post("/api/convert",
+            files={"file": ("x.kml", kml.encode(), "application/xml")})).json()["project_id"]
+    r = await client.get(f"/api/projects/{pid}/export")
+    assert r.status_code == 200, r.text
+    assert "<gpx" in r.text
+    disp = r.headers.get("content-disposition", "")
+    assert "filename*=UTF-8''" in disp, f"应使用 RFC5987 编码: {disp}"
+
+
+async def test_project_export_merges_pois(client, settings):
+    """有地名缓存时导出应把地名点并入，且不改动原轨迹点数。"""
+    import json
+    from pathlib import Path
+    kml = _sample_kml()
+    pid = (await client.post("/api/convert",
+            files={"file": ("x.kml", kml.encode(), "application/xml")})).json()["project_id"]
+    base = (await client.get(f"/api/projects/{pid}/export")).text
+    base_trkpt = base.count("<trkpt")
+
+    pois = {"items": [{"name": "测试垭口", "type_label": "垭口", "lat": 24.01,
+                       "lon": 113.01, "ele": 200.0, "distance_m": 12.0}]}
+    (Path(settings.data_dir) / "projects" / pid / "pois.json").write_text(
+        json.dumps(pois, ensure_ascii=False), encoding="utf-8")
+
+    merged = (await client.get(f"/api/projects/{pid}/export")).text
+    assert "测试垭口" in merged
+    assert merged.count("<trkpt") == base_trkpt, "轨迹点不能变"
+    assert merged.count("<wpt") == base.count("<wpt") + 1
+
+
 async def test_project_download(client):
     kml = _sample_kml()
     pid = (await client.post("/api/convert",
