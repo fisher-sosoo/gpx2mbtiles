@@ -117,7 +117,15 @@ jobs:
             fi
 
             echo "=== Building ==="
+            # --pull 会去 Docker Hub 拉基础镜像；服务器走代理，这一步偶发失败会导致整次部署回滚。
+            # 拉取失败就退回缓存的基础镜像再试一次 —— 代码本身没变，能建起来就该继续。
             if docker compose build --pull; then
+              BUILD_OK=1
+            else
+              echo "::warning::build --pull 失败，改用缓存基础镜像重试"
+              if docker compose build; then BUILD_OK=1; else BUILD_OK=0; fi
+            fi
+            if [ "$BUILD_OK" = "1" ]; then
               echo "=== Starting ==="
               docker compose up -d
               for i in $(seq 1 30); do
