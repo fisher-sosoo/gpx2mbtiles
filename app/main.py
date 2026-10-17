@@ -677,10 +677,13 @@ async def chat_curate(project_id: str, message: str = Form(...)):
         raise HTTPException(status_code=400, detail="消息不能为空")
 
     pois = project_store.load_pois(project_id)
-    if not pois or not pois.get("items"):
+    # 注意：即使当前已把点删空，只要还有原始快照就允许对话 —— 否则「恢复」永远走不到
+    has_items = bool(pois and pois.get("items"))
+    has_original = bool(pois and pois.get("original"))
+    if not has_items and not has_original:
         raise HTTPException(status_code=409,
                             detail="还没有地名点，请先做一次「补充地名航点」")
-    items = pois["items"]
+    items = pois.get("items") or []
     # 首次修正确保保留原始快照，便于 reset
     if "original" not in pois:
         pois["original"] = json.loads(json.dumps(items, ensure_ascii=False))

@@ -73,6 +73,16 @@ class TestApplyOps:
         out, applied, rejected = pc.apply_ops(cur, [{"op": "reset"}], original)
         assert len(out) == len(original), "reset 应恢复原始 4 个"
 
+    def test_reset_works_after_deleting_everything(self):
+        """删空之后仍要能用 reset 找回 —— 这是最容易踩的顺序坑。"""
+        original = _items()
+        only = [original[0]]
+        cur, _, _ = pc.apply_ops(only, [{"op": "drop_poi", "name": original[0]["name"]}])
+        assert cur == []
+        out, applied, _ = pc.apply_ops([], [{"op": "reset"}], original)
+        assert len(out) == len(original)
+        assert applied
+
     def test_reset_without_original_falls_back(self):
         cur = _items()[:3]
         out, applied, _ = pc.apply_ops(cur, [{"op": "reset"}])
