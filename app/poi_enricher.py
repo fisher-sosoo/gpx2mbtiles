@@ -144,9 +144,9 @@ class _TrackGrid:
     def __init__(self, points):
         self.points = points
         self.cells: dict = {}
-        for lat, lon in points:
+        for idx, (lat, lon) in enumerate(points):
             key = (int(math.floor(lat / self.CELL)), int(math.floor(lon / self.CELL)))
-            self.cells.setdefault(key, []).append((lat, lon))
+            self.cells.setdefault(key, []).append((lat, lon, idx))
         lats = [p[0] for p in points]
         lons = [p[1] for p in points]
         self._bounds = (min(lats), min(lons), max(lats), max(lons)) if points else (0, 0, 0, 0)
@@ -164,7 +164,7 @@ class _TrackGrid:
                 for dj in range(-radius, radius + 1):
                     if radius and max(abs(di), abs(dj)) != radius:
                         continue
-                    for plat, plon in self.cells.get((ilat + di, ilon + dj), ()):
+                    for plat, plon, _idx in self.cells.get((ilat + di, ilon + dj), ()):
                         d = haversine_m(lat, lon, plat, plon)
                         if d < best:
                             best = d
@@ -359,6 +359,12 @@ def filter_pois(elements, track_points, settings) -> PoiResult:
     start_pt, end_pt = track_points[0], track_points[-1]
     max_pois = getattr(settings, "poi_max_count", 60)
 
+    # 累计里程：给每个地名点标出「在路线第几公里」，行前指南要按这个排序
+    cum = [0.0]
+    for i in range(1, len(track_points)):
+        cum.append(cum[-1] + haversine_m(track_points[i - 1][0], track_points[i - 1][1],
+                                         track_points[i][0], track_points[i][1]))
+
     rivers = {}
     candidates = []
     for el in elements:
@@ -402,6 +408,7 @@ def filter_pois(elements, track_points, settings) -> PoiResult:
             "lon": round(lon, 6),
             "ele": _safe_float(tags.get("ele")),
             "distance_m": round(dist, 1),
+            "km": _km_at(track_points, cum, lat, lon),
             "source": "osm",
             "detail": _detail_of(tags),
         })
@@ -418,6 +425,7 @@ def filter_pois(elements, track_points, settings) -> PoiResult:
             "lon": round(lon, 6),
             "ele": None,
             "distance_m": round(dist, 1),
+            "km": _km_at(track_points, cum, lat, lon),
             "source": "osm",
             "detail": "过河点",
         })
@@ -438,6 +446,46 @@ def filter_pois(elements, track_points, settings) -> PoiResult:
         items = items[:max_pois]
     result.items = items
     return result
+
+
+def _km_at(track_points, cum, lat, lon):
+    """某个坐标在路线上的大致里程（取最近轨迹点的累计值）。"""
+    if not track_points or not cum:
+        return None
+    idx = _nearest_index(track_points, lat, lon)
+    return round(cum[idx] / 1000.0, 2)
+
+
+# 最近点索引缓存：同一条轨迹会被多个地名点反复查询
+_NEAREST_CACHE: dict = {}
+
+
+def _nearest_index(track_points, lat, lon) -> int:
+    """网格加速的最近轨迹点查找。"""
+    cell = _TrackGrid.CELL
+    ilat = int(math.floor(lat / cell))
+    ilon = int(math.floor(lon / cell))
+    key = id(track_points)
+    grid = _NEAREST_CACHE.get(key)
+    if grid is None:
+        grid = {}
+        for i, (plat, plon) in enumerate(track_points):
+            k = (int(math.floor(plat / cell)), int(math.floor(plon / cell)))
+            grid.setdefault(k, []).append((plat, plon, i))
+        _NEAREST_CACHE[key] = grid
+    best_i, best_d = 0, float("inf")
+    for radius in range(0, 8):
+        for di in range(-radius, radius + 1):
+            for dj in range(-radius, radius + 1):
+                if radius and max(abs(di), abs(dj)) != radius:
+                    continue
+                for plat, plon, idx in grid.get((ilat + di, ilon + dj), ()):
+                    d = haversine_m(lat, lon, plat, plon)
+                    if d < best_d:
+                        best_i, best_d = idx, d
+        if best_d < float("inf") and radius >= 1:
+            break
+    return best_i
 
 
 def _safe_float(v):

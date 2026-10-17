@@ -16,6 +16,8 @@ from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
 from .poi_enricher import PoiQueryError, fetch_overpass, filter_pois
+from . import trip_briefing
+from . import weather as weather_mod
 from .project_store import ProjectNotFoundError, ProjectStore
 from .task_manager import (COMPLETED, TaskLimitError, TaskManager,
                            TaskNotFoundError)
@@ -656,6 +658,87 @@ async def export_project_with_pois(project_id: str):
                    + quote(fname))
     return Response(content=gpx_text, media_type="application/gpx+xml",
                     headers={"Content-Disposition": disposition})
+
+
+# ---------------------------------------------------------------- 行前指南
+# 结构化部分（节点/天气/风险）由规则算出，模型只负责写成通顺分析；
+# 没有 AI 密钥时指南依然可用。
+
+@app.post("/api/projects/{project_id}/guide", dependencies=[Depends(require_api_key)])
+async def build_guide(project_id: str, start_date: str = Form(""),
+                      end_date: str = Form(""), use_ai: bool = Form(True)):
+    """生成行前指南（同步：天气 2~3 秒，模型 2~4 秒）。"""
+    try:
+        meta = project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    summary = meta.get("summary")
+    if not summary:
+        raise HTTPException(status_code=410, detail="项目摘要已缺失，无法生成指南")
+
+    # 轨迹中心点与海拔：决定取哪个预报格点
+    points = _project_track_points(project_store, project_id)
+    if not points:
+        raise HTTPException(status_code=410, detail="项目里没有可用的轨迹点")
+    lat = sum(p[0] for p in points) / len(points)
+    lon = sum(p[1] for p in points) / len(points)
+    eles = []
+    try:
+        import gpxpy
+        gpx = gpxpy.parse(project_store.output_path(project_id).read_text(encoding="utf-8"))
+        for trk in gpx.tracks:
+            for seg in trk.segments:
+                for p in seg.points:
+                    if p.elevation is not None:
+                        eles.append(float(p.elevation))
+    except Exception:
+        pass
+    eles.sort()
+    median_ele = eles[len(eles) // 2] if eles else None
+
+    s_date = (start_date or "").strip()
+    e_date = (end_date or "").strip() or s_date
+    try:
+        forecast = await asyncio.to_thread(
+            weather_mod.fetch_forecast, lat, lon, settings,
+            s_date, e_date, median_ele)
+    except weather_mod.WeatherError as exc:
+        forecast = {"days": [], "error": str(exc)}
+
+    pois = project_store.load_pois(project_id) or {}
+    range_label = ("%s ~ %s" % (s_date, e_date)) if s_date else "未来 7 天"
+    brief = trip_briefing.build(summary, pois, forecast, range_label)
+
+    want_ai = (use_ai if isinstance(use_ai, bool)
+               else str(use_ai).strip().lower() in ("1", "true", "yes", "on"))
+    if want_ai:
+        from . import ai_naming
+        if not ai_naming.is_configured(settings):
+            brief["ai_error"] = "未配置 AI_API_KEY"
+        else:
+            try:
+                prompt = trip_briefing.make_ai_prompt(brief)
+                brief["ai_narrative"] = await asyncio.to_thread(
+                    ai_naming.chat, prompt, settings, trip_briefing.AI_SYSTEM)
+            except Exception as exc:
+                brief["ai_error"] = str(exc)[:200]
+
+    brief["markdown"] = trip_briefing.render_markdown(brief)
+    project_store.save_guide(project_id, brief)
+    return brief
+
+
+@app.get("/api/projects/{project_id}/guide", dependencies=[Depends(require_api_key)])
+async def get_guide(project_id: str):
+    """取已生成的行前指南。"""
+    try:
+        project_store.get(project_id)
+    except ProjectNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    cached = project_store.load_guide(project_id)
+    if cached is None:
+        return {"status": "none"}
+    return {"status": "done", **cached}
 
 
 @app.get("/api/projects/{project_id}/download",

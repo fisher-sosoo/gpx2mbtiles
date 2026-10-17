@@ -280,6 +280,9 @@ def test_convert_page_exists_and_has_features():
         "/pois",                     # 地名补点
         "renderPois",                # 地名列表渲染
         "/export",                   # 含地名导出
+        "/guide",                    # 行前指南
+        "renderGuide",               # 指南渲染
+        "guideStart",                # 日期范围输入
     ):
         assert snippet in html, f"转换页缺少要素: {snippet}"
 
@@ -316,6 +319,17 @@ def test_convert_page_has_project_history():
     assert "DELETE" in js, "缺少删除调用"
     assert "/reconvert" in js, "缺少重转调用"
     assert "/download" in js, "缺少下载调用"
+
+
+def test_convert_page_has_trip_briefing():
+    """行前指南要支持日期区间与 AI 开关。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert 'id="guideStart"' in html and 'id="guideEnd"' in html, "缺少日期区间输入"
+    assert 'id="guideAi"' in html, "缺少 AI 开关"
+    assert "start_date" in js and "end_date" in js
+    assert "use_ai" in js
+    assert "复制文本" in html and "下载 Markdown" in html
 
 
 def test_convert_page_linked_from_all_pages():

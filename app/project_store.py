@@ -99,6 +99,23 @@ class ProjectStore:
         except (OSError, ValueError):
             return None
 
+    def guide_path(self, project_id: str) -> Path:
+        return self.project_dir(project_id) / "guide.json"
+
+    def save_guide(self, project_id: str, payload: dict) -> None:
+        self.project_dir(project_id).mkdir(parents=True, exist_ok=True)
+        self.guide_path(project_id).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_guide(self, project_id: str):
+        path = self.guide_path(project_id)
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def clear_pois(self, project_id: str) -> None:
         try:
             self.pois_path(project_id).unlink()

@@ -135,6 +135,11 @@ class Settings:
         self.poi_timeout_seconds = _env_int("POI_TIMEOUT_SECONDS", 180, 10, 600)
         self.poi_bbox_pad_m = _env_float("POI_BBOX_PAD_METERS", 500.0, 0.0, 5000.0)
         self.poi_max_count = _env_int("POI_MAX_COUNT", 60, 1, 500)
+
+        # ---- 行前指南（天气）----
+        # Open-Meteo 免费无需 key，实测 2.6 秒；墙内需代理，为空时复用 TILE_PROXY。
+        self.weather_proxy = os.getenv("WEATHER_PROXY", "").strip()
+        self.weather_timeout_seconds = _env_int("WEATHER_TIMEOUT_SECONDS", 30, 5, 120)
         # 墙内服务器访问模型 API 必须走代理；为空时复用 TILE_PROXY
         self.ai_proxy = os.getenv("AI_PROXY", "").strip()
         # 低于此剩余空间时停止写缓存（默认 3GB；8G 缓存 + 3G 余量，40G 盘安全）

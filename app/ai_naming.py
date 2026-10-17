@@ -107,6 +107,48 @@ def build_prompt(waypoints, summary, distance_m: float) -> str:
             .replace("{rows}", "\n".join(rows)))
 
 
+def chat(prompt: str, settings, system: str = "") -> str:
+    """通用单轮对话：给提示词，返回模型正文。供命名与行前指南共用。"""
+    payload = {
+        "model": getattr(settings, "ai_model", "deepseek-chat"),
+        "messages": (
+            [{"role": "system", "content": system}] if system else []
+        ) + [{"role": "user", "content": prompt}],
+        "max_tokens": getattr(settings, "ai_max_tokens", 2000),
+        "temperature": 0.3,
+    }
+    body = _post_payload(payload, settings)
+    choices = body.get("choices") or [{}]
+    return ((choices[0].get("message") or {}).get("content") or "").strip()
+
+
+def _post_payload(payload: dict, settings) -> dict:
+    url = getattr(settings, "ai_base_url", "https://api.deepseek.com").rstrip("/") \
+        + "/chat/completions"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Authorization": "Bearer " + settings.ai_api_key,
+        "Content-Type": "application/json",
+    })
+    timeout = getattr(settings, "ai_timeout_seconds", 30.0)
+    proxy = getattr(settings, "ai_proxy", "") or getattr(settings, "tile_proxy", "")
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
+    else:
+        opener = urllib.request.build_opener()
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise AiNamingError(f"模型返回 {exc.code}：{detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise AiNamingError(f"模型请求失败：{exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise AiNamingError(f"模型响应不是合法 JSON：{exc}") from exc
+
+
 def _post(settings, prompt: str) -> dict:
     payload = {
         "model": getattr(settings, "ai_model", "deepseek-chat"),
