@@ -1189,6 +1189,30 @@
     return added;
   }
 
+  // 从转换页交接过来的轨迹（含 OSM 地名点）。
+  // 用 sessionStorage 而不是 fetch：回放页必须保持「纯前端、不调 /api」的约定。
+  var HANDOFF_KEY = 'gpx2mbtiles_handoff';
+
+  async function pickUpHandoff() {
+    var raw;
+    try { raw = sessionStorage.getItem(HANDOFF_KEY); } catch (e) { return; }
+    if (!raw) return;
+    try { sessionStorage.removeItem(HANDOFF_KEY); } catch (e) { /* 忽略 */ }
+    var payload;
+    try { payload = JSON.parse(raw); } catch (e) { return; }
+    if (!payload || !payload.text) return;
+    var name = payload.name || 'track.gpx';
+    var file;
+    try {
+      file = new File([payload.text], name, { type: 'application/gpx+xml' });
+    } catch (e) {
+      // 极老浏览器没有 File 构造器：退化成只提示
+      document.getElementById('saveHint').textContent = '交接数据无法解析，请手动导入 ' + name;
+      return;
+    }
+    await handleFiles([file]);
+  }
+
   async function handleFiles(files) {
     var msgs = [], total = 0;
     for (var i = 0; i < files.length; i++) {
@@ -1864,6 +1888,8 @@
 
     // --- 导出 ---
     document.getElementById('btnPng').addEventListener('click', exportPng);
+  // 若从转换页跳转而来，自动接住那条轨迹
+  pickUpHandoff();
     document.getElementById('btnExpGpx').addEventListener('click', exportGpx);
     document.getElementById('btnExpJson').addEventListener('click', exportJson);
     var ji = document.getElementById('jsonInput');

@@ -321,6 +321,29 @@ def test_convert_page_has_project_history():
     assert "/download" in js, "缺少下载调用"
 
 
+def test_convert_page_hands_off_to_player_for_png():
+    """出图交给回放页：用 sessionStorage 交接，避免在转换页重造地图。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert 'id="guideMap"' in html, "缺少「在地图上查看并出图」按钮"
+    assert "sessionStorage.setItem" in js, "应通过 sessionStorage 交接"
+    assert "gpx2mbtiles_handoff" in js
+    assert "/gpx/player.html" in js, "应跳转到回放页"
+
+
+def test_player_picks_up_handoff_without_calling_api():
+    """回放页要能接住交接数据，但仍必须保持纯前端。"""
+    html = _read(PLAYER)
+    js = _extract_inline_js(html)
+    assert "pickUpHandoff" in js, "缺少交接接收逻辑"
+    assert "gpx2mbtiles_handoff" in js
+    assert "sessionStorage.removeItem" in js, "接到后应清理，避免重复导入"
+    # 仍然不允许调用生成类接口
+    import re as _re
+    used = set(_re.findall(r"/api/[a-z]+", js))
+    assert used <= {"/api/tile", "/api/tilecache"}, f"回放页出现意外调用: {used}"
+
+
 def test_convert_page_has_trip_briefing():
     """行前指南要支持日期区间与 AI 开关。"""
     html = _read(CONVERT_PAGE)
