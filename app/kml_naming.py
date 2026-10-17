@@ -32,6 +32,8 @@ class WaypointName:
     elapsed_s: float | None = None
     note: str = ""       # 用户备注原文（有则写进 desc 与 cmt）
     orig_name: str = ""  # 源文件里的 <name>，用于追溯
+    turn: float | None = None   # 该处的转角（负左正右）
+    turn_text: str = ""         # 可读转向描述
 
 
 @dataclass
@@ -57,6 +59,86 @@ def haversine_m(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float
          + math.cos(math.radians(a_lat)) * math.cos(math.radians(b_lat))
          * math.sin(d_lon / 2) ** 2)
     return 2 * EARTH_RADIUS * math.asin(min(1.0, math.sqrt(h)))
+
+
+# 转向阈值：50° 以下在山路上太常见（绕树、避石），标出来全是噪音
+TURN_MIN_DEG = 50.0
+# 120° 以上基本只有发卡弯与折返
+HAIRPIN_DEG = 120.0
+
+
+def bearing_deg(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
+    """从 a 指向 b 的方位角：0=正北，顺时针增大。"""
+    d_lon = math.radians(b_lon - a_lon)
+    lat1, lat2 = math.radians(a_lat), math.radians(b_lat)
+    y = math.sin(d_lon) * math.cos(lat2)
+    x = (math.cos(lat1) * math.sin(lat2)
+         - math.sin(lat1) * math.cos(lat2) * math.cos(d_lon))
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def normalize_turn(deg: float) -> float:
+    """把角度归一到 (-180, 180]：负=左转，正=右转。"""
+    while deg > 180.0:
+        deg -= 360.0
+    while deg <= -180.0:
+        deg += 360.0
+    return deg
+
+
+def _index_at_distance(cum, distance: float) -> int:
+    """二分找第一个累计里程 >= distance 的点下标。"""
+    lo, hi = 0, len(cum) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if cum[mid] < distance:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def turn_at(points, stats: TrackStats, index: int,
+            span_m: float = 50.0) -> float | None:
+    """位置 index 处的转角 = 离开航向 − 进入航向。
+
+    用跨 span_m 米的弦算航向，而不是相邻两点 —— GPS 抖动下相邻点航向是噪声。
+    距离不足、点重合或越界时返回 None（视为无有效转向）。
+    """
+    if not points or index < 0 or index >= len(points):
+        return None
+    cum = stats.cum
+    total = stats.distance_m
+    if total <= 0 or len(cum) != len(points):
+        return None
+
+    d = cum[index]
+    i_in = _index_at_distance(cum, max(0.0, d - span_m))
+    i_out = _index_at_distance(cum, min(total, d + span_m))
+    if i_in >= index or i_out <= index:
+        return None
+
+    a, b, c = points[i_in], points[index], points[i_out]
+    if haversine_m(a.lat, a.lon, b.lat, b.lon) < 1.0:
+        return None
+    if haversine_m(b.lat, b.lon, c.lat, c.lon) < 1.0:
+        return None
+
+    heading_in = bearing_deg(a.lat, a.lon, b.lat, b.lon)
+    heading_out = bearing_deg(b.lat, b.lon, c.lat, c.lon)
+    return normalize_turn(heading_out - heading_in)
+
+
+def describe_turn(turn: float | None) -> str:
+    """转角 → 可读文本（摘要与提示词共用，保证两处说法一致）。"""
+    if turn is None:
+        return ""
+    if abs(turn) < TURN_MIN_DEG:
+        return "直行"
+    side = "右" if turn > 0 else "左"
+    if abs(turn) >= HAIRPIN_DEG:
+        return f"发卡弯{side}{abs(turn):.0f}°"
+    return f"{side}转{abs(turn):.0f}°"
 
 
 def track_stats(points) -> TrackStats:
@@ -311,10 +393,12 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
 
         km = None
         elapsed = None
+        turn = None
         if index is not None:
             km = along_distance_m(track_points, stats, point) / 1000.0
             idx = index.nearest(point.lat, point.lon)
             elapsed = waypoint_elapsed(point, track_points, idx)
+            turn = turn_at(track_points, stats, idx)
 
         text, source = "", ""
         orig_name = _clean_note(point.name)
@@ -343,7 +427,9 @@ def name_waypoints(result: KmlResult, track_points, stats: TrackStats,
 
         full = _dedupe(f"{seq} {text}", used)
         out.append(WaypointName(text=full, source=source, km=km,
-                                elapsed_s=elapsed, note=note, orig_name=orig_name))
+                                elapsed_s=elapsed, note=note,
+                                orig_name=orig_name, turn=turn,
+                                turn_text=describe_turn(turn)))
     return out
 
 

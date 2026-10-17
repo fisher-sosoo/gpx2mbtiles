@@ -27,20 +27,24 @@ MIN_NAME_CHARS = 2
 
 _SYSTEM_PROMPT = (
     "你是资深徒步领队，擅长读海拔变化判断路况。"
-    "你只根据给定的里程、海拔、升降和时间间隔做判断，不臆造具体地名。"
+    "你只根据给定的里程、海拔、升降、转向和时间间隔做判断，不臆造具体地名。"
 )
 
 _INSTRUCTION = (
     "请为一条徒步轨迹的每个照片航点起中文名。\n"
     "轨迹概况：{overview}\n"
-    "航点按行进顺序，列格式：序号|累计里程km|海拔m|比上一点升降m|距上一点km|距上一点分钟\n"
+    "航点按行进顺序，列格式："
+    "序号|累计里程km|海拔m|比上一点升降m|距上一点km|距上一点分钟|转向\n"
     "{rows}\n"
     "要求：\n"
     "1. 每个名字 2-6 个汉字，要具体、彼此不同，避免都叫爬升或下坡。\n"
     "2. 大幅上升写陡坡/碎石坡，久留写休整/垭口/观景，接近最高点写登顶，之后写下撤。\n"
-    "3. 不要编造具体地名（村名、山名、溪名），只描述地形与动作。\n"
-    "4. 名字要让人一看就知道走到哪了。\n"
-    "只输出 JSON 数组，形如 [{\"i\": 1, \"name\": \"起步山径\"}]，不要任何其它文字。"
+    "3. 转向列是该处的拐弯情况。有明显转向时优先描述路口特征，比如"
+    "「右转切上山脊」「左转下沟」「发卡弯折返」「右转过桥」；"
+    "标了发卡弯的要体现折返；直行就描述地形本身。\n"
+    "4. 不要编造具体地名（村名、山名、溪名），只描述地形与动作。\n"
+    "5. 名字要让人一看就知道走到哪了。\n"
+    "只输出 JSON 数组，形如 [{\"i\": 1, \"name\": \"右转上山脊\"}]，不要任何其它文字。"
 )
 
 
@@ -90,7 +94,9 @@ def build_prompt(waypoints, summary, distance_m: float) -> str:
         if ele is not None and prev_ele is not None:
             d_ele = "%+.0f" % (ele - prev_ele)
         ele_txt = str(int(ele)) if ele is not None else "-"
-        rows.append("%d|%.2f|%s|%s|%s|%s" % (w["seq"], km, ele_txt, d_ele, d_km, d_min))
+        turn_txt = w.get("turn_text") or "-"
+        rows.append("%d|%.2f|%s|%s|%s|%s|%s" % (
+            w["seq"], km, ele_txt, d_ele, d_km, d_min, turn_txt))
         prev_km = km
         prev_min = minutes
         if ele is not None:

@@ -114,6 +114,8 @@ def _apply_ai_names(result: KmlResult, wp_names: list, summary: ConvertSummary,
             "km": named.km or 0.0,
             "elapsed_s": named.elapsed_s,
             "ele": point.ele,
+            "turn": named.turn,
+            "turn_text": named.turn_text,
         })
     if not candidates:
         # 全部航点都已有原始名称 —— 正常情况，不算错误
@@ -260,6 +262,8 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
             desc_lines.append(f"累计 {naming.fmt_seconds(elapsed)}")
         if point.ele is not None:
             desc_lines.append(f"海拔 {int(round(point.ele))} m")
+        if named.turn_text and named.turn_text != "直行":
+            desc_lines.append(f"转向 {named.turn_text}")
         if named.orig_name and named.orig_name not in named.text:
             desc_lines.append(f"原名称：{named.orig_name}")
         if point.attach_id:
@@ -282,6 +286,8 @@ def convert(data: bytes, filename: str = "", custom_name: str = "",
             "elapsed_s": round(elapsed) if elapsed is not None else None,
             "ele": round(point.ele, 1) if point.ele is not None else None,
             "note": named.note,
+            "turn": round(named.turn, 1) if named.turn is not None else None,
+            "turn_text": named.turn_text,
         })
         summary.name_sources[named.source] = summary.name_sources.get(named.source, 0) + 1
 

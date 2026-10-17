@@ -498,3 +498,135 @@ class TestAiPrompt:
         assert "JSON" in prompt
         # 控制在千余字符级别，避免把原始点云塞给模型
         assert len(prompt) < 4000
+
+
+class TestTurnDetection:
+    """转向几何：弦长航向 + 阈值分级。"""
+
+    @staticmethod
+    def _pt(lat, lon):
+        from app.kml_processor import KmlPoint
+        return KmlPoint(lat=lat, lon=lon, ele=100.0)
+
+    def _track(self, corner_deg, n=40, step_m=25.0):
+        """构造一条先向北、在转角处按 corner_deg 转向的轨迹（正值=右/东）。"""
+        import math as _m
+        from app.kml_naming import track_stats
+        dlat = step_m / 111320.0
+        pts = []
+        # 向北直行 n 步
+        for i in range(n):
+            pts.append(self._pt(24.0 + i * dlat, 113.0))
+        # 转向后继续 n 步
+        ang = _m.radians(corner_deg)
+        base_lat, base_lon = pts[-1].lat, pts[-1].lon
+        dlon = step_m / (111320.0 * _m.cos(_m.radians(24.0)))
+        for i in range(1, n + 1):
+            # 新方向：正北旋转 corner_deg
+            dnorth = _m.cos(ang) * i * dlat
+            deast = _m.sin(ang) * i * dlon
+            pts.append(self._pt(base_lat + dnorth, base_lon + deast))
+        # 转角点是最北那个点，即第一段的最后一个（下标 n-1）
+        return pts, track_stats(pts), n - 1
+
+    def test_right_turn_is_positive(self):
+        from app.kml_naming import turn_at
+        pts, stats, corner = self._track(90)
+        t = turn_at(pts, stats, corner, span_m=50)
+        assert t is not None
+        assert t > 0, f"右转应为正，实得 {t}"
+        assert abs(abs(t) - 90) < 20, f"应约为 90°，实得 {t}"
+
+    def test_left_turn_is_negative(self):
+        from app.kml_naming import turn_at
+        pts, stats, corner = self._track(-90)
+        t = turn_at(pts, stats, corner, span_m=50)
+        assert t is not None and t < 0, f"左转应为负，实得 {t}"
+
+    def test_straight_ahead(self):
+        from app.kml_naming import turn_at, describe_turn
+        pts, stats, corner = self._track(0)
+        t = turn_at(pts, stats, corner, span_m=50)
+        assert t is not None and abs(t) < 10
+        assert describe_turn(t) == "直行"
+
+    def test_hairpin_labelled(self):
+        from app.kml_naming import turn_at, describe_turn
+        pts, stats, corner = self._track(170)
+        t = turn_at(pts, stats, corner, span_m=50)
+        assert t is not None
+        assert "发卡弯" in describe_turn(t)
+
+    def test_describe_thresholds(self):
+        from app.kml_naming import describe_turn
+        assert describe_turn(None) == ""
+        assert describe_turn(10) == "直行"
+        assert describe_turn(49) == "直行"
+        assert describe_turn(60) == "右转60°"
+        assert describe_turn(-60) == "左转60°"
+        assert describe_turn(130) == "发卡弯右130°"
+        assert describe_turn(-179) == "发卡弯左179°"
+
+    def test_edges_return_none(self):
+        from app.kml_naming import track_stats, turn_at
+        assert turn_at([], track_stats([]), 0) is None
+        one = [self._pt(24.0, 113.0)]
+        assert turn_at(one, track_stats(one), 0) is None
+        pts, stats, _ = self._track(90)
+        assert turn_at(pts, stats, -1) is None
+        assert turn_at(pts, stats, len(pts) + 5) is None
+
+    def test_mean_reverting_noise_is_straight(self):
+        """来回抖动不应被判成转向。"""
+        from app.kml_naming import track_stats, turn_at, describe_turn
+        pts = []
+        for i in range(120):
+            jitter = 0.00002 if i % 2 else -0.00002
+            pts.append(self._pt(24.0 + i * 0.00022, 113.0 + jitter))
+        stats = track_stats(pts)
+        t = turn_at(pts, stats, 60, span_m=50)
+        assert t is not None
+        assert describe_turn(t) == "直行", f"抖动被误判为转向: {t}"
+
+
+class TestTurnInSummaryAndPrompt:
+    def test_summary_has_turn_fields(self):
+        from app.kml_processor import KmlPoint
+        from tests.conftest import make_kml
+        # 一条带明显右转的轨迹 + 一个航点
+        coords = []
+        for i in range(40):
+            coords.append((113.0, 24.0 + i * 0.00022, 100))
+        for i in range(1, 40):
+            coords.append((113.0 + i * 0.00024, 24.0 + 39 * 0.00022, 100))
+        times = [(f"2023-02-18T02:{i//60:02d}:{i%60:02d}Z") for i in range(len(coords))]
+        track = [(c[0], c[1], c[2], t) for c, t in zip(coords, times)]
+        kml = make_kml(track_times=track, waypoints=[dict(
+            lat=24.0 + 39 * 0.00022, lon=113.0,
+            ele=100, desc_time="2023-02-18 10:00:00")])
+        r = convert(kml.encode("utf-8"), "x.kml")
+        wp = r.summary.to_dict()["waypoints"][0]
+        assert "turn" in wp and "turn_text" in wp
+        assert wp["turn"] is not None
+        assert wp["turn_text"] in ("直行",) or "转" in wp["turn_text"] or "发卡" in wp["turn_text"]
+
+    def test_prompt_contains_turn_column(self):
+        from app.ai_naming import build_prompt
+        from app.gpx_converter import ConvertSummary
+        summary = ConvertSummary(tracks=[{"name": "t"}], date="2023-02-18", sport="爬山")
+        wps = [{"seq": i, "km": i * 0.5, "elapsed_s": i * 600, "ele": 300 + i * 10,
+                "turn": 84.0 if i == 3 else 0.0,
+                "turn_text": "右转84°" if i == 3 else "直行"} for i in range(1, 11)]
+        prompt = build_prompt(wps, summary, 5000.0)
+        assert "转向" in prompt
+        assert "右转84°" in prompt
+        assert "路口" in prompt or "转向" in prompt
+
+    def test_prompt_tolerates_missing_turn(self):
+        from app.ai_naming import build_prompt
+        from app.gpx_converter import ConvertSummary
+        summary = ConvertSummary(tracks=[{"name": "t"}])
+        wps = [{"seq": i, "km": 1.0 * i, "elapsed_s": None, "ele": None} for i in range(1, 4)]
+        prompt = build_prompt(wps, summary, 3000.0)
+        assert "|" in prompt
+        assert prompt.count("|") >= 6
