@@ -397,6 +397,25 @@ def test_convert_page_renders_route_image_into_analysis():
     assert "player.html" not in js, "不该跳到回放页"
 
 
+def test_convert_has_single_download_with_pois():
+    """只留一个下载入口，且必须带走地名点（不再拆成两个按钮）。"""
+    html = _read(CONVERT_PAGE)
+    js = _extract_inline_js(html)
+    assert 'id="poiExportBtn"' not in html, "「下载含地名 GPX」应已合并"
+    assert "poiExportBtn" not in js
+    assert 'id="downloadBtn"' in html
+    assert "/export" in js, "下载应走服务端合并导出"
+    assert "withToken" in js, "浏览器导航需要带 token"
+
+
+def test_convert_route_image_has_gpx_fallback():
+    """出图不能只依赖接口：手上已有 gpx 时应直接解析。"""
+    js = _extract_inline_js(_read(CONVERT_PAGE))
+    assert "ensureTrackPoints" in js, "缺少轨迹点兜底"
+    assert "state.result.gpx" in js or "inline" in js, "应优先用内存里的 gpx"
+    assert "parseTrackPoints" in js
+
+
 def test_convert_toggles_live_next_to_ai_naming():
     """岔路与地名补点改成顶部开关，跟 AI 推测命名放一起。"""
     html = _read(CONVERT_PAGE)

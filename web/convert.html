@@ -151,7 +151,7 @@
   <div class="tracks" id="trackList"></div>
   <div id="warnLine" class="warn-line" style="display:none"></div>
   <button id="downloadBtn">⬇️ 下载 GPX</button>
-  <div class="hint" id="useHint">下载后可导入仅支持 GPX 的 App（Avenza / Guru Maps / 两步路 等），也可直接回到离线地图页生成底图。</div>
+  <div class="hint" id="useHint">下载的 GPX 已包含补充的地名航点，可直接导入仅支持 GPX 的 App（Avenza / Guru Maps / 两步路 等）。</div>
 </div>
 
 
@@ -164,7 +164,7 @@
   <div id="poiList"><div class="hint">还没有查询，点下面的按钮从 OpenStreetMap 拉取沿线地名</div></div>
   <div class="row2" style="margin-top:10px">
     <button class="secondary" id="poiBtn" style="display:none">🧭 补充地名航点</button>
-    <button class="secondary" id="poiExportBtn" style="width:50%;display:none">⬇️ 下载含地名 GPX</button>
+
   </div>
 
   <div id="chatWrap" style="display:none;margin-top:14px;border-top:1px solid #2a3848;padding-top:12px">
@@ -363,24 +363,38 @@
     if (!hasProject) $('poiCard').style.display = 'none';
 
     if (!hasProject) return;
-    $('poiExportBtn').style.display = 'none';
+
     $('guideOut').style.display = 'none';
     // 对话入口常驻：没有地名点时给提示，而不是把入口藏起来
     $('chatWrap').style.display = 'block';
     setChatEnabled(false);
   }
 
-  // 取项目 GPX 只为在本页画图；失败不影响其它功能
-  function loadTrackForMap() {
-    if (!state.projectId) return;
-    apiFetch('/api/projects/' + state.projectId + '/export')
+  // 轨迹点优先从「转换结果里已有的 GPX」解析，拿不到再去接口取。
+  // 之前只走接口，接口一失败就整张图空白（实测踩过），而 gpx 其实就在手上。
+  function ensureTrackPoints() {
+    if (state.trackPts && state.trackPts.length) {
+      return Promise.resolve(state.trackPts);
+    }
+    var inline = state.result && state.result.gpx;
+    if (inline) {
+      var pts = parseTrackPoints(inline);
+      if (pts.length) { state.trackPts = pts; return Promise.resolve(pts); }
+    }
+    if (!state.projectId) return Promise.resolve([]);
+    return apiFetch('/api/projects/' + state.projectId + '/export')
       .then(function (r) { return r.ok ? r.text() : ''; })
       .then(function (text) {
-        if (!text) return;
-        state.trackPts = parseTrackPoints(text);
+        if (text) {
+          var got = parseTrackPoints(text);
+          if (got.length) state.trackPts = got;
+        }
+        return state.trackPts || [];
       })
-      .catch(function () { /* 地图失败不阻断其它功能 */ });
+      .catch(function () { return state.trackPts || []; });
   }
+
+  function loadTrackForMap() { ensureTrackPoints(); }
 
   // 顶部两个开关：转换完成后按勾选自动跑，不再需要单独按钮
   function maybeRunEnrichments() {
@@ -524,7 +538,9 @@
   function renderRouteIntoGuide() {
     var wrap = $('routeImgWrap');
     if (!wrap) return;
-    renderRouteImage(2).then(function (canvas) {
+    ensureTrackPoints().then(function () {
+      return renderRouteImage(2);
+    }).then(function (canvas) {
       if (!trackLatLngs().length) {
         wrap.textContent = '（没有轨迹数据，无法出图）';
         return;
@@ -851,7 +867,12 @@
         apiFetch('/api/projects/' + state.projectId)
           .then(function (r) { return r.json(); })
           .then(function (d) {
-            if (d && d.summary) { state.result = d; render(d); }
+            if (d && d.summary) {
+              // 保留已有的 gpx 文本：出图与下载都要用，不能只留 summary
+              if (state.result && state.result.gpx) d.gpx = state.result.gpx;
+              state.result = d;
+              render(d);
+            }
             applyJunctionResult(j);
           })
           .catch(function () { applyJunctionResult(j); });
@@ -980,7 +1001,7 @@
       tb.appendChild(tr);
     });
     list.appendChild(tbl);
-    $('poiExportBtn').style.display = 'inline-block';
+
     $('chatWrap').style.display = 'block';
     setChatEnabled(items.length > 0);
     state.pois = items;
@@ -1029,11 +1050,6 @@
         $('poiBtn').textContent = '🧭 补充地名航点';
         showErr('查询失败：' + e);
       });
-  });
-
-  $('poiExportBtn').addEventListener('click', function () {
-    if (!state.projectId || !ensureKey()) return;
-    window.location.href = withToken('/api/projects/' + state.projectId + '/export');
   });
 
   // ---------- 历史项目 ----------
@@ -1168,6 +1184,11 @@
   // ---------- 下载 ----------
   $('downloadBtn').addEventListener('click', function () {
     if (!state.result) return;
+    // 有项目时走服务端合并导出：地名点会一并写进 GPX，不需要再单独下一个「含地名」版本
+    if (state.projectId && ensureKey()) {
+      window.location.href = withToken('/api/projects/' + state.projectId + '/export');
+      return;
+    }
     var blob = new Blob([state.result.gpx], { type: 'application/gpx+xml' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
