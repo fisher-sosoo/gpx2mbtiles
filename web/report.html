@@ -1,0 +1,1636 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分析长图 · GPX</title>
+<style>
+  :root { --bg:#0e141b; --card:#1a2430; --line:#2a3848; --accent:#4da3ff;
+          --ok:#3ecf8e; --err:#ff6b6b; --warn:#ffb454; --muted:#8aa0b4; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
+         background:var(--bg); color:#e8eef4; display:flex; flex-direction:column; overflow:hidden; }
+  .topbar { display:flex; align-items:center; gap:14px; padding:0 14px; height:46px;
+            background:var(--card); border-bottom:1px solid var(--line); flex-shrink:0; }
+  .topbar .brand { font-weight:700; font-size:15px; white-space:nowrap; }
+  .tabs { display:flex; gap:4px; overflow-x:auto; }
+  .tab { padding:8px 16px; border-radius:9px 9px 0 0; font-size:13.5px; font-weight:600;
+         color:var(--muted); text-decoration:none; white-space:nowrap; }
+  .tab:hover { color:#cfe1f2; background:#20303f; }
+  .tab.active { background:var(--bg); color:var(--accent); }
+
+  .wrap { flex:1; display:flex; min-height:0; }
+  #side { width:322px; flex-shrink:0; background:var(--card); border-right:1px solid var(--line);
+          overflow-y:auto; padding:12px; }
+  .card { background:#16202b; border:1px solid var(--line); border-radius:12px;
+          padding:11px 12px; margin-bottom:11px; }
+  .card h2 { font-size:12.5px; margin:0 0 9px; color:#9fc2e8; font-weight:700;
+             letter-spacing:.4px; display:flex; justify-content:space-between; align-items:center; }
+  label { font-size:12px; color:#a9bccb; display:block; margin:8px 0 4px; }
+  select, input[type=text] { width:100%; background:#0f1822; border:1px solid var(--line);
+           color:#e8eef4; border-radius:8px; padding:7px 9px; font-size:13px;
+           font-family:inherit; }
+  input[type=text]:focus { outline:none; border-color:var(--accent); }
+  button { border:0; border-radius:9px; padding:9px 13px; font-size:13px; font-weight:600;
+           cursor:pointer; background:var(--accent); color:#06233f; font-family:inherit; }
+  button:hover:not(:disabled) { filter:brightness(1.1); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.secondary { background:#243547; color:#cfe1f2; }
+  .btnrow { display:flex; gap:7px; margin-top:8px; }
+  .btnrow > button { flex:1; }
+  .hint { font-size:11.5px; color:#7890a4; margin-top:5px; line-height:1.6; }
+  .muted { color:var(--muted); font-size:12px; }
+  #drop { border:2px dashed var(--line); border-radius:12px; padding:18px 12px;
+          text-align:center; color:var(--muted); font-size:12.5px; cursor:pointer;
+          transition:.15s; line-height:1.6; }
+  #drop:hover, #drop.over { border-color:var(--accent); background:#16222e; color:#cfe1f2; }
+  #stage { flex:1; min-width:0; overflow:auto; padding:22px; display:flex;
+           align-items:flex-start; justify-content:center; background:#0b1016; }
+  #empty { color:#5f7284; font-size:13px; text-align:center; line-height:2; margin-top:14vh; }
+  #preview { display:none; width:100%; max-width:620px; height:auto; border-radius:10px;
+             box-shadow:0 18px 50px #000a; background:#fff; }
+  #status.err { color:var(--err); }
+  #status.ok { color:var(--ok); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">🗺️ GPX 工具</div>
+  <div class="tabs">
+    <a class="tab" href="/gpx/">📦 生成离线地图</a>
+    <a class="tab" href="/gpx/convert.html">🏷️ KML 转 GPX</a>
+    <a class="tab" href="/gpx/player.html">🎬 轨迹回放与分析</a>
+    <a class="tab active" href="/gpx/report.html">📊 分析长图</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="side">
+    <div class="card">
+      <h2>导入 GPX</h2>
+      <div id="drop">
+        <div style="font-size:22px">📁</div>
+        拖拽 GPX 到此处，或点击选择
+      </div>
+      <input type="file" id="fileInput" accept=".gpx" style="display:none">
+      <div class="hint">只接受 .gpx。解析与出图全部在浏览器本地完成，文件不上传。</div>
+    </div>
+
+    <div class="card">
+      <h2>轨迹 <span class="muted" id="trackCount">0 条</span></h2>
+      <select id="trackSel" disabled>
+        <option>先导入 GPX</option>
+      </select>
+      <div class="hint" id="trackMeta">导入后可切换要分析的轨迹。</div>
+    </div>
+
+    <div class="card">
+      <h2>出图</h2>
+      <label>标题名称（留空用轨迹名）</label>
+      <input type="text" id="titleInput" placeholder="例如：老胡头穿越" maxlength="40">
+      <label>输出倍率</label>
+      <select id="scaleSel">
+        <option value="1" selected>1× · 1080 宽（推荐）</option>
+        <option value="2">2× · 2160 宽（更清晰、更慢）</option>
+      </select>
+      <div class="btnrow">
+        <button id="btnRender" disabled>生成分析长图</button>
+      </div>
+      <div class="btnrow">
+        <button class="secondary" id="btnDownload" disabled>下载 PNG</button>
+      </div>
+      <div class="hint" id="status">先导入一个 GPX 文件。</div>
+    </div>
+
+    <div class="card">
+      <h2>说明</h2>
+      <div class="hint">
+        长图包含：按速度着色的轨迹图（Windy 底图）、总览数据、速度曲线、
+        按速度着色的海拔剖面、自适应分段表（最多 10 段）。缺少时间或海拔时，
+        对应区块自动省略。<br>
+        瓦片经本站代理获取，一次只取当前区域的一个缩放级别。
+      </div>
+    </div>
+  </div>
+
+  <div id="stage">
+    <div id="empty">📊<br>导入 GPX 后在这里预览分析长图</div>
+    <img id="preview" alt="分析长图预览">
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   分析长图：导入 GPX → 一张竖版长图
+   （轨迹图 / 总览 / 速度曲线 / 海拔剖面 / 1km 分段表）
+
+   纯前端：只有底图瓦片请求走本站 /api/tile/windy 代理（Windy 直连会被
+   CORS 拦，响应头违反规范导致 ERR_BLOCKED_BY_ORB），其余全部在浏览器完成。
+   ===================================================================== */
+(function () {
+  'use strict';
+
+  var W = 1080, PAD = 48, MAP_H = 1440, TILE = 256;
+  var MAX_TILES = 60, MIN_ZOOM = 6, MAX_ZOOM = 17;
+  var TILE_CONCURRENCY = 6;
+  var FONT = '-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+  // 速度阈值、色带与中性色定义在下方「纯函数区」，那里会被测试单独抽取执行
+  var INK = '#1b2430', MUTED = '#6b7a8c', LINE = '#e3e9ef';
+
+  var state = { tracks: [], index: -1, model: null, blob: null, fileName: '', busy: false };
+
+  function $(id) { return document.getElementById(id); }
+
+  // =====================================================================
+  //  纯函数区：tests/test_player.py 会抽取 PURE_START..PURE_END 在 node 下测试
+  // =====================================================================
+  /* PURE_START */
+  var STOP_MPS = 0.14;
+  var SPEED_STOPS = ['#3d7bd9', '#46b97a', '#d8cf4a', '#f0a33c', '#e2513c'];
+  var STOP_COLOR = '#9aa7b4';
+
+  function haversine(a, b) {
+    var R = 6371000;
+    var p1 = a.lat * Math.PI / 180, p2 = b.lat * Math.PI / 180;
+    var dp = (b.lat - a.lat) * Math.PI / 180;
+    var dl = (b.lng - a.lng) * Math.PI / 180;
+    var h = Math.sin(dp / 2) * Math.sin(dp / 2) +
+            Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function percentile(sorted, p) {
+    if (!sorted.length) return 0;
+    var i = (sorted.length - 1) * p;
+    var lo = Math.floor(i), hi = Math.ceil(i);
+    if (lo === hi) return sorted[lo];
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
+  }
+
+  // 按累计里程在相邻两点之间线性插值取点
+  function interpSample(cum, pts, dist) {
+    var n = pts.length;
+    if (dist <= 0) {
+      return { lat: pts[0].lat, lng: pts[0].lng, ele: pts[0].ele, time: pts[0].time };
+    }
+    if (dist >= cum[n - 1]) {
+      var last = pts[n - 1];
+      return { lat: last.lat, lng: last.lng, ele: last.ele, time: last.time };
+    }
+    var lo = 0, hi = n - 1;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (cum[mid] <= dist) lo = mid; else hi = mid;
+    }
+    var span = cum[hi] - cum[lo];
+    var f = span > 0 ? (dist - cum[lo]) / span : 0;
+    var a = pts[lo], b = pts[hi];
+    return {
+      lat: a.lat + (b.lat - a.lat) * f,
+      lng: a.lng + (b.lng - a.lng) * f,
+      ele: (a.ele !== null && b.ele !== null) ? a.ele + (b.ele - a.ele) * f
+           : (f < 0.5 ? a.ele : b.ele),
+      time: (a.time !== null && b.time !== null) ? a.time + (b.time - a.time) * f
+            : (f < 0.5 ? a.time : b.time)
+    };
+  }
+
+  // 速度 → 颜色：档位之间线性插值，得到连续渐变（不再是 5 段跳变）。
+  // 返回 null 表示该点没有可用速度，调用方沿用上一个颜色。
+  function speedColor(value, domain) {
+    if (value === null || value === undefined || !isFinite(value)) return null;
+    if (value < STOP_MPS) return STOP_COLOR;
+    if (!domain || !(domain.hi - domain.lo > 0.01)) return SPEED_STOPS[2];
+    var t = (value - domain.lo) / (domain.hi - domain.lo);
+    t = Math.max(0, Math.min(1, t));
+    t = Math.round(t * 32) / 32;            // 细分 33 级：够平滑，又能合并同色段
+    return gradientColor(t);
+  }
+
+  function gradientColor(t) {
+    var last = SPEED_STOPS.length - 1;
+    var f = Math.max(0, Math.min(1, t)) * last;
+    var i = Math.min(last - 1, Math.floor(f));
+    return mixHex(SPEED_STOPS[i], SPEED_STOPS[i + 1], f - i);
+  }
+
+  function hex2(n) {
+    var s = Math.round(n).toString(16);
+    return s.length < 2 ? '0' + s : s;
+  }
+
+  function mixHex(a, b, k) {
+    var ar = parseInt(a.slice(1, 3), 16), ag = parseInt(a.slice(3, 5), 16);
+    var ab = parseInt(a.slice(5, 7), 16);
+    var br = parseInt(b.slice(1, 3), 16), bg = parseInt(b.slice(3, 5), 16);
+    var bb = parseInt(b.slice(5, 7), 16);
+    return '#' + hex2(ar + (br - ar) * k) + hex2(ag + (bg - ag) * k) +
+           hex2(ab + (bb - ab) * k);
+  }
+
+  // 运动时间：按移动速度阈值累计（静止 = 总耗时 - 运动时间）
+  function movingSeconds(pts, cum) {
+    var n = pts.length, sum = 0;
+    for (var i = 1; i < n; i++) {
+      var a = pts[i - 1], b = pts[i];
+      if (a.time === null || a.time === undefined) continue;
+      if (b.time === null || b.time === undefined) continue;
+      var dt = (b.time - a.time) / 1000;
+      if (dt <= 0) continue;
+      if ((cum[i] - cum[i - 1]) / dt >= STOP_MPS) sum += dt;
+    }
+    return sum;
+  }
+
+  var SLOPE_PCT = 0.05;
+
+  // 坡度构成：±50m 窗口算坡度，>3% 爬升、<-3% 下降、其余平路
+  function slopeShares(pts, cum) {
+    var n = pts.length, up = 0, flat = 0, down = 0, WIN = 50;
+    var g1 = 0, g2 = 0;
+    for (var i = 1; i < n; i++) {
+      while (g1 < n - 1 && cum[i] - cum[g1] > WIN) g1++;
+      if (g2 < i) g2 = i;
+      while (g2 < n - 1 && cum[g2] - cum[i] < WIN) g2++;
+      var e1 = pts[g1].ele, e2 = pts[g2].ele;
+      var span = cum[g2] - cum[g1];
+      if (e1 === null || e1 === undefined) continue;
+      if (e2 === null || e2 === undefined) continue;
+      if (span <= 0) continue;
+      var grade = (e2 - e1) / span;
+      var step = cum[i] - cum[i - 1];
+      if (grade > SLOPE_PCT) up += step;
+      else if (grade < -SLOPE_PCT) down += step;
+      else flat += step;
+    }
+    var total = up + flat + down;
+    return total > 0 ? { up: up, flat: flat, down: down, total: total } : null;
+  }
+
+  // 分段步长：从 1km 起按整数倍递增，保证总段数不超过 10
+  function pickSplitStep(totalM) {
+    var steps = [1000, 2000, 3000, 5000, 10000, 15000, 20000, 25000, 50000];
+    for (var i = 0; i < steps.length; i++) {
+      if (Math.ceil(totalM / steps[i]) <= 10) return steps[i];
+    }
+    return steps[steps.length - 1];
+  }
+
+  // 分段：model 需要 points / cum / hasEle，可选 stepM（默认 1km）
+  function buildSplits(model) {
+    var pts = model.points, cum = model.cum, n = pts.length;
+    var step = model.stepM && model.stepM > 0 ? model.stepM : 1000;
+    var total = cum[n - 1];
+    if (!(total > 0.5)) return [];
+    var starts = [];
+    for (var d = 0; d < total - 0.5; d += step) starts.push(d);
+    if (!starts.length) starts.push(0);
+
+    var rows = [];
+    var cursor = 0;
+    for (var s = 0; s < starts.length; s++) {
+      var a0 = starts[s];
+      var a1 = Math.min(total, a0 + step);
+      var pA = interpSample(cum, pts, a0);
+      var pB = interpSample(cum, pts, a1);
+
+      var gain = null, loss = null, hrSum = 0, hrCnt = 0, cadSum = 0, cadCnt = 0;
+      if (model.hasEle) { gain = 0; loss = 0; }
+      var prevEle = pA.ele;
+      while (cursor < n && cum[cursor] <= a0) cursor++;
+      for (var k = cursor; k < n && cum[k] <= a1; k++) {
+        var e = pts[k].ele;
+        if (e !== null && gain !== null) {
+          if (prevEle !== null) {
+            if (e > prevEle) gain += e - prevEle;
+            else if (e < prevEle) loss += prevEle - e;
+          }
+          prevEle = e;
+        }
+        if (pts[k].hr !== null && pts[k].hr !== undefined) { hrSum += pts[k].hr; hrCnt++; }
+        if (pts[k].cad !== null && pts[k].cad !== undefined) { cadSum += pts[k].cad; cadCnt++; }
+      }
+      if (gain !== null && pB.ele !== null && prevEle !== null) {
+        if (pB.ele > prevEle) gain += pB.ele - prevEle;
+        else if (pB.ele < prevEle) loss += prevEle - pB.ele;
+      }
+
+      var dist = a1 - a0;
+      var sec = (pA.time !== null && pB.time !== null && pB.time > pA.time)
+              ? (pB.time - pA.time) / 1000 : null;
+      rows.push({
+        idx: rows.length + 1,
+        dist: dist / 1000,
+        time: sec,
+        pace: (sec !== null && sec > 0) ? sec / (dist / 1000) : null,
+        speed: (sec !== null && sec > 0) ? dist / sec * 3.6 : null,
+        gain: gain === null ? null : Math.round(gain),
+        loss: loss === null ? null : Math.round(loss),
+        hr: hrCnt ? hrSum / hrCnt : null,
+        cad: cadCnt ? cadSum / cadCnt : null
+      });
+    }
+    return rows;
+  }
+  /* PURE_END */
+
+  // =====================================================================
+  //  GPX 解析
+  // =====================================================================
+  function kids(root, name) {
+    var out = [], ch = root.childNodes || [];
+    for (var i = 0; i < ch.length; i++) {
+      var n = ch[i];
+      if (n.nodeType === 1 && n.localName === name) out.push(n);
+    }
+    return out;
+  }
+  function childText(root, name) {
+    var k = kids(root, name);
+    return k.length ? (k[0].textContent || '').trim() : '';
+  }
+  // 深度找扩展字段（gpxtpx:hr / gpxtpx:cad 等）
+  function deepNumber(root, names) {
+    var stack = [root];
+    while (stack.length) {
+      var node = stack.pop();
+      var ch = node.childNodes || [];
+      for (var i = 0; i < ch.length; i++) {
+        var c = ch[i];
+        if (c.nodeType !== 1) continue;
+        if (names.indexOf(c.localName) >= 0) {
+          var v = parseFloat(c.textContent);
+          if (isFinite(v)) return v;
+        }
+        stack.push(c);
+      }
+    }
+    return null;
+  }
+
+  function parsePoint(node) {
+    var lat = parseFloat(node.getAttribute('lat'));
+    var lng = parseFloat(node.getAttribute('lon'));
+    if (!isFinite(lat) || !isFinite(lng)) return null;
+    var eleText = childText(node, 'ele');
+    var ele = eleText === '' ? null : parseFloat(eleText);
+    if (!isFinite(ele)) ele = null;
+    var timeText = childText(node, 'time');
+    var time = timeText ? Date.parse(timeText) : NaN;
+    if (!isFinite(time)) time = null;
+    return {
+      lat: lat, lng: lng, ele: ele, time: time,
+      hr: deepNumber(node, ['hr', 'heartrate']),
+      cad: deepNumber(node, ['cad', 'cadence'])
+    };
+  }
+
+  function parseGpx(text, fallbackName) {
+    var doc = null;
+    try { doc = new DOMParser().parseFromString(text, 'text/xml'); } catch (e) { doc = null; }
+    if (!doc || !doc.documentElement) throw new Error('GPX 解析失败：无法解析 XML');
+    if (doc.getElementsByTagName('parsererror').length) {
+      throw new Error('GPX 解析失败：XML 格式不正确');
+    }
+    var root = doc.documentElement;
+    if (root.localName !== 'gpx') throw new Error('不是 GPX 文件：根节点不是 gpx');
+
+    var trks = kids(root, 'trk');
+    var tracks = [];
+    for (var i = 0; i < trks.length; i++) {
+      var name = childText(trks[i], 'name') || fallbackName
+                 || ('轨迹 ' + (i + 1));
+      var pts = [];
+      var segs = kids(trks[i], 'trkseg');
+      for (var s = 0; s < segs.length; s++) {
+        var nodes = kids(segs[s], 'trkpt');
+        for (var j = 0; j < nodes.length; j++) {
+          var p = parsePoint(nodes[j]);
+          if (p) pts.push(p);
+        }
+      }
+      if (pts.length >= 2) tracks.push({ name: name, points: pts });
+    }
+    if (!tracks.length) throw new Error('GPX 里没有可用的轨迹点（trkpt）');
+    return tracks;
+  }
+
+  // =====================================================================
+  //  派生数据与格式化
+  // =====================================================================
+  function deriveCum(pts) {
+    var n = pts.length, cum = new Array(n);
+    cum[0] = 0;
+    for (var i = 1; i < n; i++) cum[i] = cum[i - 1] + haversine(pts[i - 1], pts[i]);
+    return cum;
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+  function fmtDuration(sec) {
+    if (sec === null || sec === undefined || !isFinite(sec) || sec < 0) return '—';
+    var t = Math.round(sec);
+    var h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+    return h > 0 ? h + ':' + pad2(m) + ':' + pad2(s) : m + ':' + pad2(s);
+  }
+  function fmtPace(secPerKm) {
+    if (secPerKm === null || secPerKm === undefined ||
+        !isFinite(secPerKm) || secPerKm <= 0) return '—';
+    var m = Math.floor(secPerKm / 60), s = Math.round(secPerKm % 60);
+    if (s === 60) { m += 1; s = 0; }
+    return m + "'" + pad2(s) + '"';
+  }
+  function fmtKm(m) { return (m / 1000).toFixed(2); }
+  function fmtSpeed(mps) { return (mps * 3.6).toFixed(1) + ' km/h'; }
+  function fmtDate(ms) {
+    if (ms === null || ms === undefined || !isFinite(ms)) return '';
+    var d = new Date(ms);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+           ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  function buildModel(track) {
+    var pts = track.points, n = pts.length;
+    var cum = deriveCum(pts);
+    var distance = cum[n - 1];
+    var i, k;
+
+    var t0 = null, t1 = null, timeCount = 0;
+    for (i = 0; i < n; i++) {
+      if (pts[i].time !== null) {
+        if (timeCount === 0) t0 = pts[i].time;
+        t1 = pts[i].time;
+        timeCount++;
+      }
+    }
+    var hasTime = timeCount >= 2 && t1 > t0;
+    var duration = hasTime ? (t1 - t0) / 1000 : null;
+
+    // 运动 / 静止：静止取差值，保证两者之和等于总耗时
+    var moving = 0, stopped = 0;
+    if (hasTime) {
+      moving = Math.min(duration, movingSeconds(pts, cum));
+      stopped = duration - moving;
+    }
+
+    var eleCount = 0, ascent = 0, descent = 0, eleMin = null, eleMax = null;
+    for (i = 0; i < n; i++) {
+      var e = pts[i].ele;
+      if (e === null) continue;
+      eleCount++;
+      if (eleMin === null || e < eleMin) eleMin = e;
+      if (eleMax === null || e > eleMax) eleMax = e;
+      if (i > 0 && pts[i - 1].ele !== null) {
+        var de = e - pts[i - 1].ele;
+        if (de > 0) ascent += de; else descent -= de;
+      }
+    }
+    var hasEle = eleCount >= Math.max(3, Math.floor(n * 0.5)) &&
+                 eleMin !== null && eleMax - eleMin >= 0.5;
+
+    var hrCount = 0, cadCount = 0;
+    for (i = 0; i < n; i++) {
+      if (pts[i].hr !== null) hrCount++;
+      if (pts[i].cad !== null) cadCount++;
+    }
+
+    // ---- 速度：按「距离窗口」算，而不是逐点差分 ----
+    // 逐点差分在 1 秒采样下噪声极大，着色会变成一段段的碎色（像虚线）。
+    // 取 ±120m 窗口内的距离/时间，既平滑又不会抹掉上下坡的速度差。
+    var vs = new Array(n);
+    for (i = 0; i < n; i++) vs[i] = null;
+    if (hasTime) {
+      var HALF_M = 120;
+      var wLo = 0, wHi = 0;
+      for (i = 0; i < n; i++) {
+        while (wLo < n - 1 && cum[i] - cum[wLo] > HALF_M) wLo++;
+        if (wHi < i) wHi = i;
+        while (wHi < n - 1 && cum[wHi] - cum[i] < HALF_M) wHi++;
+        var tA = pts[wLo].time, tB = pts[wHi].time;
+        if (tA === null || tB === null) continue;
+        var dtW = (tB - tA) / 1000;
+        if (dtW <= 0) continue;
+        var sp = (cum[wHi] - cum[wLo]) / dtW;
+        if (sp > 15) continue;                 // 超过 54 km/h 必是 GPS 跳点
+        vs[i] = sp;
+      }
+    }
+
+    // ---- 色带值域：P10–P90，个别尖峰不会把整条线压成单色 ----
+    var valid = [];
+    for (i = 0; i < n; i++) {
+      if (vs[i] !== null && vs[i] >= STOP_MPS) valid.push(vs[i]);
+    }
+    valid.sort(function (x, y) { return x - y; });
+    var domain = valid.length >= 8
+      ? { lo: percentile(valid, 0.10), hi: percentile(valid, 0.90) } : null;
+
+    // 档位先稳定化：新档位要连续 3 个点才切换。
+    // 否则 GPS 抖动会让轨迹出现一段一段的「碎色」，看起来像虚线。
+    var segColors = new Array(n);
+    var lastColor = '#2f7fd3';
+    for (i = 0; i < n; i++) {
+      var c = speedColor(hasTime ? vs[i] : null, domain);
+      if (c === null) c = lastColor;      // 无速度的孤点沿用上一段颜色，避免断色
+      segColors[i] = c;
+      lastColor = c;
+    }
+
+    // ---- 速度序列：±100m 窗口，抑制单点噪声（内部 m/s，出图换算 km/h）----
+    var speedPts = [], speedVals = [];
+    if (hasTime) {
+      var loI = 0, hiI = 0;
+      for (i = 0; i < n; i++) {
+        while (loI < n - 1 && cum[i] - cum[loI] > 100) loI++;
+        if (hiI < i) hiI = i;
+        while (hiI < n - 1 && cum[hiI] - cum[i] < 100) hiI++;
+        var tA = pts[loI].time, tB = pts[hiI].time;
+        var dtW = (tA !== null && tB !== null) ? (tB - tA) / 1000 : 0;
+        var ddW = cum[hiI] - cum[loI];
+        var sp = dtW > 0 ? ddW / dtW : null;
+        var vRun = (sp !== null && sp >= 0.3) ? sp : null;
+        speedPts.push({ d: cum[i], v: vRun });
+        if (vRun !== null) speedVals.push(vRun);
+      }
+    }
+    speedVals.sort(function (x, y) { return x - y; });
+    var chartDomain = null;
+    if (speedVals.length >= 30) {
+      // 用 P2–P98 而非极值：个别 GPS 跳点不会把整条曲线压成一条平线
+      var sLo = percentile(speedVals, 0.02), sHi = percentile(speedVals, 0.98);
+      // 上下各留一成余量：曲线不再贴着顶边或底边（之前会「穿顶/穿底」）
+      var head = Math.max(0.10, (sHi - sLo) * 0.12);
+      chartDomain = { lo: Math.max(0, sLo - head), hi: sHi + head };
+    }
+
+    var elePts = [];
+    for (i = 0; i < n; i++) {
+      if (pts[i].ele !== null) {
+        elePts.push({ d: cum[i], ele: pts[i].ele, c: segColors[i] });
+      }
+    }
+
+    var slope = hasEle ? slopeShares(pts, cum) : null;
+
+    // 分段步长随总距离自适应，保证总段数不超过 10 段
+    var stepM = pickSplitStep(distance);
+    var splits = buildSplits({ points: pts, cum: cum, hasEle: hasEle, stepM: stepM });
+
+    var fastest = -1, slowest = -1;
+    for (i = 0; i < splits.length; i++) {
+      if (splits[i].pace === null) continue;
+      if (fastest < 0 || splits[i].pace < splits[fastest].pace) fastest = i;
+      if (slowest < 0 || splits[i].pace > splits[slowest].pace) slowest = i;
+    }
+    if (splits.length < 3 || fastest === slowest) { fastest = -1; slowest = -1; }
+
+    var model = {
+      name: track.name || '轨迹',
+      points: pts, cum: cum, distance: distance, pointCount: n,
+      hasTime: hasTime, hasEle: hasEle,
+      hasHr: hrCount >= 3, hasCad: cadCount >= 3,
+      duration: duration,
+      ascent: ascent, descent: descent, eleMin: eleMin, eleMax: eleMax,
+      timeText: hasTime
+        ? ('开始 ' + fmtDate(t0) + '   →   结束 ' + fmtDate(t1))
+        : '缺少时间信息（无时间戳）',
+      moving: hasTime ? moving : null, stopped: hasTime ? stopped : null,
+      slope: slope,
+      colorDomain: domain, segColors: segColors,
+      speedPts: speedPts, speedCount: speedVals.length, speedDomain: chartDomain,
+      elePts: elePts, eleCount: elePts.length,
+      stepM: stepM, splits: splits, fastest: fastest, slowest: slowest
+    };
+    model.metrics = metricList(model);
+    model.tableCols = tableColumns(model);
+    return model;
+  }
+
+  function metricList(model) {
+    var out = [];
+    if (model.duration !== null && model.distance > 0) {
+      out.push({ label: '总耗时', value: fmtDuration(model.duration) });
+      out.push({ label: '运动时间', value: fmtDuration(model.moving) });
+      out.push({ label: '静止时间', value: fmtDuration(model.stopped) });
+      out.push({ label: '平均配速', value: fmtPace(model.duration / (model.distance / 1000)) });
+      out.push({ label: '全程均速', value: (model.distance / model.duration * 3.6).toFixed(1) + ' km/h' });
+    }
+    if (model.hasEle) {
+      out.push({ label: '累计爬升', value: Math.round(model.ascent) + ' m' });
+      out.push({ label: '累计下降', value: Math.round(model.descent) + ' m' });
+      out.push({ label: '最高海拔', value: Math.round(model.eleMax) + ' m' });
+      out.push({ label: '最低海拔', value: Math.round(model.eleMin) + ' m' });
+    }
+    if (!out.length) {
+      // 既无时间也无海拔：别把大号里程再抄一遍，改用轨迹与分段规模
+      out.push({ label: '轨迹点', value: model.pointCount + ' 个' });
+      out.push({ label: '分段', value: model.splits.length + ' 段' });
+    }
+    return out;
+  }
+
+  function tableColumns(model) {
+    var cols = [
+      { k: 'idx', label: '分段', align: 'left', w: 10 },
+      { k: 'dist', label: '距离/km', align: 'right', w: 16 },
+      { k: 'time', label: '用时', align: 'right', w: 19 },
+      { k: 'pace', label: '配速', align: 'right', w: 19 },
+      { k: 'speed', label: '均速', align: 'right', w: 17 },
+      { k: 'gain', label: '爬升 / 下降', align: 'right', w: 19 }
+    ];
+    if (!model.hasEle) {
+      cols = cols.filter(function (c) { return c.k !== 'gain'; });
+    }
+    if (model.hasHr) cols.push({ k: 'hr', label: '心率', align: 'right', w: 12 });
+    if (model.hasCad) cols.push({ k: 'cad', label: '步频', align: 'right', w: 12 });
+    return cols;
+  }
+
+  function cellText(row, key) {
+    if (key === 'idx') return String(row.idx);
+    if (key === 'dist') return row.dist.toFixed(2);
+    if (key === 'time') return fmtDuration(row.time);
+    if (key === 'pace') return fmtPace(row.pace);
+    if (key === 'speed') return row.speed === null ? '—' : row.speed.toFixed(1);
+    if (key === 'gain') return row.gain === null ? '—' : String(row.gain);
+    if (key === 'hr') return row.hr === null ? '—' : String(Math.round(row.hr));
+    if (key === 'cad') return row.cad === null ? '—' : String(Math.round(row.cad));
+    return '';
+  }
+
+  function buildPlan(model) {
+    var metrics = model.metrics;
+    var hasSpeed = model.hasTime && model.speedDomain !== null;
+    var hasEle = model.hasEle && model.eleCount >= 20;
+    var y = MAP_H;
+    var plan = { hasSpeed: hasSpeed, hasEle: hasEle };
+
+    // 底图与卡片之间留出呼吸空间，标题不要贴着地图边缘
+    plan.headTop = y + 44;
+    y = plan.headTop + 200;
+
+    plan.metricsTop = y;
+    plan.metricsH = Math.ceil(metrics.length / 3) * 96 + 24;
+    y += plan.metricsH;
+
+    plan.slopeTop = y;
+    plan.slopeH = model.slope ? 172 : 0;
+    y += plan.slopeH;
+
+    plan.speedTop = y;
+    plan.speedH = hasSpeed ? 380 : 0;
+    y += plan.speedH;
+
+    plan.eleTop = y;
+    plan.eleH = hasEle ? 316 : 0;
+    y += plan.eleH;
+
+    plan.tableTop = y;
+    plan.tableH = 56 + 56 + model.splits.length * 64 + 16;
+    y += plan.tableH;
+
+    plan.footerTop = y;
+    y += 76;
+    plan.height = y + 20;
+    return plan;
+  }
+
+  // =====================================================================
+  //  地图：投影 / 视野 / 瓦片
+  // =====================================================================
+  function mercator(lat, lng) {
+    var s = Math.sin(lat * Math.PI / 180);
+    s = Math.max(-0.9999, Math.min(0.9999, s));
+    return { x: (lng + 180) / 360,
+             y: 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI) };
+  }
+
+  function project(lat, lng, zoom, ox, oy) {
+    var scale = TILE * Math.pow(2, zoom);
+    var m = mercator(lat, lng);
+    return [m.x * scale - ox, m.y * scale - oy];
+  }
+
+  // 自动框选：最高可用缩放级别，且瓦片数不超过上限
+  function fitMap(model, w, h, margin) {
+    var pts = model.points;
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (var i = 0; i < pts.length; i++) {
+      var m = mercator(pts[i].lat, pts[i].lng);
+      if (m.x < minX) minX = m.x;
+      if (m.x > maxX) maxX = m.x;
+      if (m.y < minY) minY = m.y;
+      if (m.y > maxY) maxY = m.y;
+    }
+    var availW = Math.max(60, w - margin * 2);
+    var availH = Math.max(60, h - margin * 2);
+    var zoom = MIN_ZOOM;
+    for (var z = MAX_ZOOM; z >= MIN_ZOOM; z--) {
+      var s = Math.pow(2, z) * TILE;
+      if ((maxX - minX) * s <= availW && (maxY - minY) * s <= availH) {
+        zoom = z;
+        break;
+      }
+    }
+    while (zoom > MIN_ZOOM) {
+      var sc = Math.pow(2, zoom) * TILE;
+      var ox0 = (minX + maxX) / 2 * sc - w / 2;
+      var oy0 = (minY + maxY) / 2 * sc - h / 2;
+      var nx = Math.floor((ox0 + w) / TILE) - Math.floor(ox0 / TILE) + 1;
+      var ny = Math.floor((oy0 + h) / TILE) - Math.floor(oy0 / TILE) + 1;
+      if (nx * ny <= MAX_TILES) break;
+      zoom--;
+    }
+    var scale = Math.pow(2, zoom) * TILE;
+    var ox = (minX + maxX) / 2 * scale - w / 2;
+    var oy = (minY + maxY) / 2 * scale - h / 2;
+    ox = Math.max(0, Math.min(scale - w, ox));
+    oy = Math.max(0, Math.min(scale - h, oy));
+    return { zoom: zoom, ox: ox, oy: oy };
+  }
+
+  function tileJobs(view, w, h) {
+    var jobs = [];
+    var n = Math.pow(2, view.zoom);
+    var minX = Math.floor(view.ox / TILE), maxX = Math.floor((view.ox + w - 1) / TILE);
+    var minY = Math.floor(view.oy / TILE), maxY = Math.floor((view.oy + h - 1) / TILE);
+    for (var x = minX; x <= maxX; x++) {
+      for (var y = minY; y <= maxY; y++) {
+        if (y < 0 || y >= n) continue;
+        jobs.push({
+          url: '/api/tile/windy/' + view.zoom + '/' + (((x % n) + n) % n) + '/' + y,
+          dx: x * TILE - view.ox,
+          dy: y * TILE - view.oy
+        });
+      }
+    }
+    return jobs;
+  }
+
+  function loadTileImage(url) {
+    return new Promise(function (resolve) {
+      var attempt = 0;
+      function go() {
+        var im = new Image();
+        // 瓦片走本站同源代理；crossOrigin 只为保证画布不被污染（toBlob 才可用）
+        im.crossOrigin = 'anonymous';
+        im.onload = function () { resolve(im); };
+        im.onerror = function () {
+          attempt++;
+          if (attempt < 2) setTimeout(go, 260);
+          else resolve(null);
+        };
+        im.src = url;
+      }
+      go();
+    });
+  }
+
+  async function loadAllTiles(jobs, onProgress) {
+    var images = new Array(jobs.length);
+    for (var start = 0; start < jobs.length; start += TILE_CONCURRENCY) {
+      var slice = jobs.slice(start, start + TILE_CONCURRENCY);
+      var got = await Promise.all(slice.map(function (j) {
+        return loadTileImage(j.url);
+      }));
+      for (var i = 0; i < got.length; i++) images[start + i] = got[i];
+      if (onProgress) onProgress(Math.min(jobs.length, start + slice.length), jobs.length);
+    }
+    return images;
+  }
+
+  // =====================================================================
+  //  画布基础
+  // =====================================================================
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function clipText(ctx, text, maxW) {
+    if (ctx.measureText(text).width <= maxW) return text;
+    var t = text;
+    while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+    return t + '…';
+  }
+
+  function sectionTitle(ctx, y, title, note) {
+    ctx.save();
+    ctx.fillStyle = '#4da3ff';
+    ctx.fillRect(PAD - 12, y + 11, 4, 22);
+    ctx.fillStyle = INK;
+    ctx.font = '700 24px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(title, PAD, y + 30);
+    if (note) {
+      ctx.fillStyle = MUTED;
+      ctx.font = '500 15px ' + FONT;
+      ctx.textAlign = 'right';
+      ctx.fillText(note, W - PAD, y + 30);
+    }
+    ctx.restore();
+  }
+
+  function niceStep(kmTotal) {
+    var steps = [1, 2, 5, 10, 20, 50, 100];
+    for (var i = 0; i < steps.length; i++) {
+      if (kmTotal / steps[i] <= 8) return steps[i];
+    }
+    return 200;
+  }
+
+  // =====================================================================
+  //  地图绘制
+  // =====================================================================
+  function drawMap(ctx, model, view, images, jobs) {
+    ctx.save();
+    ctx.fillStyle = '#e7edf3';
+    ctx.fillRect(0, 0, W, MAP_H);
+    // 底图压到 80% 不透明度：地形还看得见，彩色轨迹明显更跳
+    ctx.globalAlpha = 0.8;
+    for (var i = 0; i < jobs.length; i++) {
+      if (images[i]) ctx.drawImage(images[i], jobs[i].dx, jobs[i].dy, TILE, TILE);
+    }
+    ctx.globalAlpha = 1;
+
+    drawTrackLine(ctx, model, view);
+    drawEndpoints(ctx, model, view);
+    drawSpeedLegend(ctx, model);
+    drawSourceTag(ctx);
+    ctx.restore();
+  }
+
+  function drawTrackLine(ctx, model, view) {
+    var pts = model.points, n = pts.length;
+    var xy = new Array(n);
+    for (var i = 0; i < n; i++) {
+      xy[i] = project(pts[i].lat, pts[i].lng, view.zoom, view.ox, view.oy);
+    }
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // 白色描边（保证在任何底图上都看得清）
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 11;
+    ctx.beginPath();
+    ctx.moveTo(xy[0][0], xy[0][1]);
+    for (i = 1; i < n; i++) ctx.lineTo(xy[i][0], xy[i][1]);
+    ctx.stroke();
+
+    // 按速度分色：合并相邻同色段，减少 stroke 次数
+    ctx.lineWidth = 6.5;
+    var cur = null, run = [];
+    function flush() {
+      if (cur && run.length > 1) {
+        ctx.strokeStyle = cur;
+        ctx.beginPath();
+        ctx.moveTo(run[0][0], run[0][1]);
+        for (var k = 1; k < run.length; k++) ctx.lineTo(run[k][0], run[k][1]);
+        ctx.stroke();
+      }
+      run = [];
+    }
+    for (i = 1; i < n; i++) {
+      var c = model.segColors[i] || '#2f7fd3';
+      if (c !== cur) {
+        flush();
+        cur = c;
+        run = [xy[i - 1], xy[i]];      // 重叠一个点，避免出现断口
+      } else {
+        run.push(xy[i]);
+      }
+    }
+    flush();
+    ctx.restore();
+  }
+
+  function badge(ctx, x, y, text, color) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, 23, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 22px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 1);
+    ctx.restore();
+  }
+
+  function drawEndpoints(ctx, model, view) {
+    var pts = model.points;
+    var a = project(pts[0].lat, pts[0].lng, view.zoom, view.ox, view.oy);
+    var b = project(pts[pts.length - 1].lat, pts[pts.length - 1].lng, view.zoom, view.ox, view.oy);
+    badge(ctx, a[0], a[1], '起', '#1f9d55');
+    badge(ctx, b[0], b[1], '终', '#c0392b');
+  }
+
+  function drawSpeedLegend(ctx, model) {
+    var x = PAD, y = MAP_H - 178, w = 430, h = 104;
+    ctx.save();
+    roundRect(ctx, x, y, w, h, 16);
+    ctx.fillStyle = 'rgba(14,20,27,0.84)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = '#e8eef4';
+    ctx.font = '600 20px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('速度', x + 24, y + 30);
+
+    var bx = x + 24, bw = w - 48, by = y + 50, bh = 12;
+    // 图例也走连续渐变，和轨迹的着色方式一致
+    var grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    for (var i = 0; i < SPEED_STOPS.length; i++) {
+      grad.addColorStop(i / (SPEED_STOPS.length - 1), SPEED_STOPS[i]);
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.font = '500 16px ' + FONT;
+    ctx.fillStyle = '#9fb2c4';
+    if (model.colorDomain) {
+      ctx.textAlign = 'left';
+      ctx.fillText('慢 ' + fmtSpeed(model.colorDomain.lo), bx, by + 32);
+      ctx.textAlign = 'right';
+      ctx.fillText(fmtSpeed(model.colorDomain.hi) + ' 快', bx + bw, by + 32);
+    } else {
+      ctx.textAlign = 'left';
+      ctx.fillText('时间不足，按单色绘制', bx, by + 32);
+    }
+    ctx.restore();
+  }
+
+  function drawSourceTag(ctx) {
+    var text = '底图 © Windy 户外图 · Seznam.cz';
+    ctx.save();
+    ctx.font = '500 16px ' + FONT;
+    var tw = ctx.measureText(text).width;
+    var w = tw + 28, h = 34;
+    var x = W - PAD - w, y = MAP_H - 34 - h;
+    roundRect(ctx, x, y, w, h, 8);
+    ctx.fillStyle = 'rgba(14,20,27,0.62)';
+    ctx.fill();
+    ctx.fillStyle = 'rgba(232,238,244,0.88)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + 14, y + h / 2 + 1);
+    ctx.restore();
+  }
+
+  // =====================================================================
+  //  长图版面
+  // =====================================================================
+  function drawHead(ctx, model, y) {
+    ctx.save();
+    ctx.fillStyle = INK;
+    ctx.font = '700 32px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(clipText(ctx, model.name, W - PAD * 2), PAD, y + 34);
+
+    ctx.fillStyle = MUTED;
+    ctx.font = '500 17px ' + FONT;
+    ctx.fillText(model.timeText, PAD, y + 64);
+
+    var distText = fmtKm(model.distance);
+    ctx.fillStyle = INK;
+    ctx.font = '800 92px ' + FONT;
+    ctx.fillText(distText, PAD, y + 160);
+    var dw = ctx.measureText(distText).width;
+    ctx.fillStyle = MUTED;
+    ctx.font = '600 30px ' + FONT;
+    ctx.fillText('公里', PAD + dw + 16, y + 160);
+    ctx.restore();
+  }
+
+  function drawMetrics(ctx, model, y) {
+    var list = model.metrics;
+    var colW = (W - PAD * 2) / 3;
+    ctx.save();
+    for (var i = 0; i < list.length; i++) {
+      var cx = PAD + (i % 3) * colW;
+      var cy = y + Math.floor(i / 3) * 96;
+      ctx.fillStyle = INK;
+      ctx.font = '700 34px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(list[i].value, cx, cy + 38);
+      ctx.fillStyle = MUTED;
+      ctx.font = '500 16px ' + FONT;
+      ctx.fillText(list[i].label, cx, cy + 64);
+    }
+    ctx.restore();
+  }
+
+  function drawSlope(ctx, model, top) {
+    var s = model.slope;
+    if (!s || s.total <= 0) return;
+    sectionTitle(ctx, top, '坡度构成', '按距离');
+
+    var x = PAD, w = W - PAD * 2;
+    var barY = top + 60, barH = 22;
+    var segs = [
+      { label: '爬升', v: s.up, color: '#f0a33c' },
+      { label: '平路', v: s.flat, color: '#c3ced8' },
+      { label: '下降', v: s.down, color: '#6aa9e0' }
+    ];
+
+    ctx.save();
+    roundRect(ctx, x, barY, w, barH, 11);
+    ctx.fillStyle = '#eef2f6';
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
+    var acc = 0, i;
+    for (i = 0; i < segs.length; i++) {
+      var sw = w * segs[i].v / s.total;
+      ctx.fillStyle = segs[i].color;
+      ctx.fillRect(x + acc, barY, sw + 1, barH);
+      acc += sw;
+    }
+    ctx.restore();
+
+    var colW = w / 3;
+    var ly = barY + barH + 40;
+    for (i = 0; i < segs.length; i++) {
+      var cx = x + i * colW;
+      ctx.fillStyle = segs[i].color;
+      ctx.beginPath();
+      ctx.arc(cx + 7, ly - 7, 7, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = INK;
+      ctx.font = '700 20px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      var pct = Math.round(segs[i].v / s.total * 100);
+      ctx.fillText(segs[i].label + ' ' + pct + '%', cx + 22, ly);
+
+      ctx.fillStyle = MUTED;
+      ctx.font = '500 15px ' + FONT;
+      ctx.fillText(fmtKm(segs[i].v) + ' km', cx + 22, ly + 24);
+    }
+    ctx.restore();
+  }
+
+  function drawSpeedChart(ctx, model, top) {
+    var note = '';
+    var speeds = [];
+    for (var s = 0; s < model.splits.length; s++) {
+      if (model.splits[s].speed !== null) speeds.push(model.splits[s].speed);
+    }
+    speeds.sort(function (a, b) { return a - b; });
+    if (model.duration !== null && model.distance > 0) {
+      note = '平均 ' + fmtSpeed(model.distance / model.duration);
+      if (speeds.length) {
+        note += '  ·  最快段 ' + speeds[speeds.length - 1].toFixed(1) + ' km/h';
+      }
+    }
+    sectionTitle(ctx, top, '速度', note);
+
+    var y0 = top + 56;
+    var plotL = PAD + 82, plotR = W - PAD;
+    var plotT = y0 + 12, plotB = y0 + 300 - 40;
+    var dom = model.speedDomain;
+    var i;
+
+    function X(d) {
+      return plotL + (d / Math.max(1, model.distance)) * (plotR - plotL);
+    }
+    // 越高越快；超出量程的点贴边，绝不越出绘图区
+    function Y(v) {
+      var t = (v - dom.lo) / Math.max(1e-6, dom.hi - dom.lo);
+      t = Math.max(0, Math.min(1, t));
+      return plotB - t * (plotB - plotT);
+    }
+
+    ctx.save();
+    // 横向网格 + 速度刻度（km/h，越高越快）
+    ctx.strokeStyle = '#eef2f6';
+    ctx.lineWidth = 1;
+    ctx.font = '500 14px ' + FONT;
+    ctx.fillStyle = '#9aa7b4';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (i = 0; i <= 3; i++) {
+      var vv = dom.lo + (dom.hi - dom.lo) * i / 3;
+      var gy = Y(vv);
+      ctx.beginPath();
+      ctx.moveTo(plotL, gy);
+      ctx.lineTo(plotR, gy);
+      ctx.stroke();
+      ctx.fillText((vv * 3.6).toFixed(1), plotL - 10, gy);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('km/h', plotL, plotT - 5);
+    // 纵向里程刻度
+    var step = niceStep(model.distance / 1000);
+    ctx.strokeStyle = '#f4f7fa';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (var km = 0; km * step * 1000 <= model.distance + 1; km++) {
+      var gx = X(km * step * 1000);
+      ctx.beginPath();
+      ctx.moveTo(gx, plotT);
+      ctx.lineTo(gx, plotB);
+      ctx.stroke();
+      ctx.fillText(String(km * step), gx, plotB + 8);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillText('km', plotR, plotB + 24);
+
+    // 曲线：先面积后描边。整段裁剪在绘图区内：
+    // 超过量程的尖峰只贴边，不会画到坐标轴外压住刻度文字。
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plotL, plotT, plotR - plotL, plotB - plotT);
+    ctx.clip();
+
+    var pts = model.speedPts;
+    var runs = [], cur = [];
+    for (i = 0; i < pts.length; i++) {
+      if (pts[i].v === null) {
+        if (cur.length > 1) runs.push(cur);
+        cur = [];
+        continue;
+      }
+      cur.push([X(pts[i].d), Y(pts[i].v)]);
+    }
+    if (cur.length > 1) runs.push(cur);
+
+    var r, k;
+    for (r = 0; r < runs.length; r++) {
+      var run = runs[r];
+      ctx.beginPath();
+      ctx.moveTo(run[0][0], plotB);
+      ctx.lineTo(run[0][0], run[0][1]);
+      for (k = 1; k < run.length; k++) ctx.lineTo(run[k][0], run[k][1]);
+      ctx.lineTo(run[run.length - 1][0], plotB);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(77,163,255,0.13)';
+      ctx.fill();
+    }
+    ctx.lineWidth = 2.4;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#4da3ff';
+    for (r = 0; r < runs.length; r++) {
+      var rn = runs[r];
+      ctx.beginPath();
+      ctx.moveTo(rn[0][0], rn[0][1]);
+      for (k = 1; k < rn.length; k++) ctx.lineTo(rn[k][0], rn[k][1]);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.restore();
+  }
+
+  function drawEleChart(ctx, model, top) {
+    var note = '最高 ' + Math.round(model.eleMax) + ' m  ·  最低 ' +
+               Math.round(model.eleMin) + ' m';
+    sectionTitle(ctx, top, '海拔', note);
+
+    var y0 = top + 56;
+    var plotL = PAD + 82, plotR = W - PAD;
+    var plotT = y0 + 12, plotB = y0 + 240 - 40;
+    var lo = model.eleMin, hi = model.eleMax;
+    if (hi - lo < 10) hi = lo + 10;
+    var padE = (hi - lo) * 0.14;
+    lo -= padE;
+    hi += padE;
+    var i;
+
+    function X(d) {
+      return plotL + (d / Math.max(1, model.distance)) * (plotR - plotL);
+    }
+    function Y(e) {
+      return plotB - (e - lo) / Math.max(1e-6, hi - lo) * (plotB - plotT);
+    }
+
+    ctx.save();
+    ctx.strokeStyle = '#eef2f6';
+    ctx.lineWidth = 1;
+    ctx.font = '500 14px ' + FONT;
+    ctx.fillStyle = '#9aa7b4';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (i = 0; i <= 3; i++) {
+      // 刻度取真实海拔区间，避免出现「-45 m」这种地图上不存在的高度
+      var ev = model.eleMin + (model.eleMax - model.eleMin) * i / 3;
+      var gy = Y(ev);
+      ctx.beginPath();
+      ctx.moveTo(plotL, gy);
+      ctx.lineTo(plotR, gy);
+      ctx.stroke();
+      ctx.fillText(String(Math.round(ev)), plotL - 10, gy);
+    }
+    var step = niceStep(model.distance / 1000);
+    ctx.strokeStyle = '#f4f7fa';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (var km = 0; km * step * 1000 <= model.distance + 1; km++) {
+      var gx = X(km * step * 1000);
+      ctx.beginPath();
+      ctx.moveTo(gx, plotT);
+      ctx.lineTo(gx, plotB);
+      ctx.stroke();
+      ctx.fillText(String(km * step), gx, plotB + 8);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillText('km', plotR, plotB + 24);
+
+    var pts = model.elePts;
+    if (pts.length > 1) {
+      // 面积用中性底色：折线要按速度上色，底色再花就糊成一片
+      ctx.beginPath();
+      ctx.moveTo(X(pts[0].d), plotB);
+      for (i = 0; i < pts.length; i++) ctx.lineTo(X(pts[i].d), Y(pts[i].ele));
+      ctx.lineTo(X(pts[pts.length - 1].d), plotB);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(120,140,160,0.12)';
+      ctx.fill();
+
+      // 折线：与地图同一套速度色带，逐段着色
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      for (i = 1; i < pts.length; i++) {
+        ctx.beginPath();
+        ctx.moveTo(X(pts[i - 1].d), Y(pts[i - 1].ele));
+        ctx.lineTo(X(pts[i].d), Y(pts[i].ele));
+        ctx.strokeStyle = pts[i].c || '#2f9e6b';
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawTable(ctx, model, top, cols) {
+    var stepKm = model.stepM / 1000;
+    var stepText = (stepKm % 1 === 0 ? stepKm : stepKm.toFixed(1)) + ' 公里';
+    sectionTitle(ctx, top, '分段数据', '每 ' + stepText);
+
+    var left = PAD, totalW = W - PAD * 2;
+    var wsum = 0, i;
+    for (i = 0; i < cols.length; i++) wsum += cols[i].w;
+
+    var headTop = top + 56;
+    ctx.save();
+    ctx.fillStyle = '#f2f5f8';
+    ctx.fillRect(left, headTop, totalW, 56);
+    ctx.font = '600 16px ' + FONT;
+    ctx.textBaseline = 'middle';
+    var cx = left;
+    for (i = 0; i < cols.length; i++) {
+      var cw = totalW * cols[i].w / wsum;
+      ctx.fillStyle = '#5c6b7a';
+      ctx.textAlign = cols[i].align === 'left' ? 'left' : 'right';
+      ctx.fillText(cols[i].label,
+                   cols[i].align === 'left' ? cx + 18 : cx + cw - 18,
+                   headTop + 29);
+      cx += cw;
+    }
+
+    for (var r = 0; r < model.splits.length; r++) {
+      var row = model.splits[r];
+      var ry = headTop + 56 + r * 64;
+      var bg = (r % 2) ? '#fafbfc' : '#ffffff';
+      if (r === model.fastest) bg = '#fdeaea';
+      else if (r === model.slowest) bg = '#e8f7ec';
+      ctx.fillStyle = bg;
+      ctx.fillRect(left, ry, totalW, 64);
+
+      var rx = left;
+      for (i = 0; i < cols.length; i++) {
+        var cw2 = totalW * cols[i].w / wsum;
+        var tx = cols[i].align === 'left' ? rx + 18 : rx + cw2 - 18;
+        if (cols[i].k === 'gain') {
+          // 升降写成两行：↑ 爬升用红、↓ 下降用绿
+          ctx.textAlign = 'right';
+          ctx.font = '600 16px ' + FONT;
+          ctx.fillStyle = '#d9534f';
+          ctx.fillText('↑' + (row.gain === null ? '—' : row.gain), tx, ry + 26);
+          ctx.fillStyle = '#1f9d55';
+          ctx.fillText('↓' + (row.loss === null ? '—' : row.loss), tx, ry + 48);
+          rx += cw2;
+          continue;
+        }
+        ctx.font = '500 17px ' + FONT;
+        ctx.fillStyle = cols[i].k === 'idx' ? '#5c6b7a' : INK;
+        ctx.textAlign = cols[i].align === 'left' ? 'left' : 'right';
+        ctx.fillText(cellText(row, cols[i].k), tx, ry + 32);
+        rx += cw2;
+      }
+      ctx.strokeStyle = '#eef2f6';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, ry + 64);
+      ctx.lineTo(left + totalW, ry + 64);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawFooter(ctx, y) {
+    ctx.save();
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD, y);
+    ctx.lineTo(W - PAD, y);
+    ctx.stroke();
+    ctx.fillStyle = MUTED;
+    ctx.font = '500 15px ' + FONT;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.fillText('底图 © Windy 户外图（Seznam.cz）', PAD, y + 40);
+    ctx.textAlign = 'right';
+    ctx.fillText('gpx2mbtiles · 生成于 ' + fmtDate(Date.now()), W - PAD, y + 40);
+    ctx.restore();
+  }
+
+  function drawReport(ctx, model, view, images, jobs, plan) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, plan.height);
+
+    drawMap(ctx, model, view, images, jobs);
+
+    // 白色卡片：顶部圆角压在底图下沿，观感接近手机端的分享卡片
+    roundRect(ctx, 0, MAP_H - 28, W, plan.height - MAP_H + 28, 28);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    drawHead(ctx, model, plan.headTop);
+    drawMetrics(ctx, model, plan.metricsTop);
+    if (model.slope) drawSlope(ctx, model, plan.slopeTop);
+    if (plan.hasSpeed) drawSpeedChart(ctx, model, plan.speedTop);
+    if (plan.hasEle) drawEleChart(ctx, model, plan.eleTop);
+    drawTable(ctx, model, plan.tableTop, model.tableCols);
+    drawFooter(ctx, plan.footerTop);
+  }
+
+  // =====================================================================
+  //  出图流程
+  // =====================================================================
+  function canvasToBlob(canvas) {
+    return new Promise(function (resolve) {
+      if (!canvas.toBlob) { resolve(null); return; }
+      canvas.toBlob(function (b) { resolve(b); }, 'image/png');
+    });
+  }
+
+  function cleanName(name) {
+    var bad = '\\/:*?"<>|';
+    var out = '';
+    for (var i = 0; i < name.length; i++) {
+      var ch = name.charAt(i);
+      out += bad.indexOf(ch) >= 0 ? '_' : ch;
+    }
+    return out;
+  }
+
+  function setStatus(text, kind) {
+    var el = $('status');
+    el.textContent = text;
+    el.className = 'hint' + (kind ? ' ' + kind : '');
+  }
+
+  function readText(file) {
+    if (file.text) return file.text();
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result)); };
+      fr.onerror = function () { reject(new Error('读取失败')); };
+      fr.readAsText(file);
+    });
+  }
+
+  async function render() {
+    var model = state.model;
+    if (!model || state.busy) return;
+    state.busy = true;
+    $('btnRender').disabled = true;
+    $('btnDownload').disabled = true;
+    try {
+      var scale = parseFloat($('scaleSel').value) || 1;
+      var plan = buildPlan(model);
+      var H = plan.height;
+      var used = scale;
+      // 超出浏览器画布安全区间时自动降到 1×，绝不静默输出空白图
+      if (H * used > 30000 || W * H * used * used > 150000000) used = 1;
+
+      setStatus('准备画布 ' + Math.round(W * used) + ' × ' + Math.round(H * used) +
+                '（' + used + '×）…');
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(W * used);
+      canvas.height = Math.round(H * used);
+      var ctx = canvas.getContext('2d');
+      ctx.setTransform(used, 0, 0, used, 0, 0);
+
+      var view = fitMap(model, W, MAP_H, 96);
+      var jobs = tileJobs(view, W, MAP_H);
+      setStatus('取底图瓦片 0/' + jobs.length + '…');
+      var images = await loadAllTiles(jobs, function (done, total) {
+        setStatus('取底图瓦片 ' + done + '/' + total + '…');
+      });
+
+      setStatus('绘制长图…');
+      drawReport(ctx, model, view, images, jobs, plan);
+
+      var blob = await canvasToBlob(canvas);
+      if (!blob) throw new Error('画布为空，无法导出');
+      state.blob = blob;
+      state.fileName = cleanName((model.name || '轨迹') + '_分析长图.png');
+
+      var img = $('preview');
+      var url = URL.createObjectURL(blob);
+      try {
+        if (img.dataset && img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+        img.dataset.url = url;
+      } catch (e) { /* 老浏览器忽略 */ }
+      img.src = url;
+      img.style.display = 'block';
+      $('empty').style.display = 'none';
+      $('btnDownload').disabled = false;
+
+      var failed = 0;
+      for (var i = 0; i < images.length; i++) if (!images[i]) failed++;
+      setStatus('已生成 ' + Math.round(W * used) + ' × ' + Math.round(H * used) +
+                '（' + used + '×）' +
+                (failed ? '，' + failed + ' 张瓦片缺失已留底色' : ''), 'ok');
+    } catch (err) {
+      setStatus('生成失败：' + (err && err.message ? err.message : err), 'err');
+    } finally {
+      state.busy = false;
+      $('btnRender').disabled = !state.model;
+      $('btnDownload').disabled = !state.blob;
+    }
+  }
+
+  function download() {
+    if (!state.blob) return;
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(state.blob);
+    a.download = state.fileName || '分析长图.png';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 1500);
+  }
+
+  // =====================================================================
+  //  导入与交互
+  // =====================================================================
+  function selectIndex(index) {
+    state.index = index;
+    var track = state.tracks[index];
+    if (!track) { state.model = null; return; }
+    if (!track.model) track.model = buildModel(track);
+    state.model = track.model;
+    var m = state.model;
+    m.name = track.customName || track.name;
+    $('titleInput').value = track.customName || '';
+    $('trackMeta').textContent = fmtKm(m.distance) + ' km · ' +
+      (m.duration !== null ? fmtDuration(m.duration) : '无时间信息') + ' · ' +
+      m.splits.length + ' 段';
+    $('btnRender').disabled = false;
+  }
+
+  function longestIndex() {
+    var best = 0, bestLen = -1;
+    for (var i = 0; i < state.tracks.length; i++) {
+      var cum = deriveCum(state.tracks[i].points);
+      var len = cum[cum.length - 1];
+      if (len > bestLen) { bestLen = len; best = i; }
+    }
+    return best;
+  }
+
+  function fillTrackSelect() {
+    var sel = $('trackSel');
+    sel.innerHTML = '';
+    for (var i = 0; i < state.tracks.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = state.tracks[i].name;
+      sel.appendChild(opt);
+    }
+    sel.disabled = !state.tracks.length;
+    $('trackCount').textContent = state.tracks.length + ' 条';
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    if (state.busy) { setStatus('正在出图，稍后再导入', 'err'); return; }
+    var lower = file.name.toLowerCase();
+    if (lower.slice(-4) !== '.gpx') {
+      setStatus('只接受 .gpx 文件（当前是 ' + file.name + '）', 'err');
+      return;
+    }
+    setStatus('解析 ' + file.name + '…');
+
+    var text;
+    try {
+      text = await readText(file);
+    } catch (e) {
+      setStatus('读取文件失败：' + (e && e.message ? e.message : e), 'err');
+      return;
+    }
+    var garbled = text.indexOf(String.fromCharCode(0xfffd)) >= 0;
+
+    var tracks;
+    try {
+      tracks = parseGpx(text, file.name.slice(0, -4));
+    } catch (e) {
+      state.tracks = [];
+      state.model = null;
+      state.blob = null;
+      $('preview').style.display = 'none';
+      $('empty').style.display = 'block';
+      $('btnRender').disabled = true;
+      $('btnDownload').disabled = true;
+      $('trackCount').textContent = '0 条';
+      $('trackSel').innerHTML = '<option>先导入 GPX</option>';
+      $('trackSel').disabled = true;
+      $('trackMeta').textContent = '解析失败，没有可分析的内容。';
+      setStatus(e && e.message ? e.message : '解析失败', 'err');
+      return;
+    }
+
+    state.tracks = tracks;
+    state.blob = null;
+    fillTrackSelect();
+    var idx = longestIndex();
+    $('trackSel').value = String(idx);
+    selectIndex(idx);
+    if (garbled) setStatus('已解析 ' + tracks.length + ' 条轨迹，但文件含无法解码的字符', 'err');
+    await render();
+  }
+
+  function bindUI() {
+    var drop = $('drop'), fi = $('fileInput');
+    drop.addEventListener('click', function () { fi.click(); });
+    fi.addEventListener('change', function () {
+      var f = fi.files && fi.files[0];
+      fi.value = '';
+      handleFile(f);
+    });
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) {
+        e.preventDefault();
+        drop.classList.add('over');
+      });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) {
+        e.preventDefault();
+        drop.classList.remove('over');
+      });
+    });
+    drop.addEventListener('drop', function (e) {
+      var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) handleFile(f);
+    });
+    window.addEventListener('dragover', function (e) { e.preventDefault(); });
+    window.addEventListener('drop', function (e) { e.preventDefault(); });
+
+    $('trackSel').addEventListener('change', function () {
+      selectIndex(parseInt(this.value, 10) || 0);
+      render();
+    });
+    $('btnRender').addEventListener('click', function () { render(); });
+    $('btnDownload').addEventListener('click', download);
+
+    // 自定义标题：留空回退轨迹名，改名后立即重出图（文件名也跟着走）
+    $('titleInput').addEventListener('change', function () {
+      var track = state.tracks[state.index];
+      if (!track || !state.model) return;
+      var v = this.value.trim();
+      track.customName = v;
+      state.model.name = v || track.name;
+      render();
+    });
+  }
+
+  bindUI();
+})();
+</script>
+</body>
+</html>

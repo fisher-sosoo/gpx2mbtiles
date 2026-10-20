@@ -16,6 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 PLAYER = ROOT / "web" / "player.html"
 INDEX = ROOT / "web" / "index.html"
+REPORT = ROOT / "web" / "report.html"
 
 
 def _read(path: Path) -> str:
@@ -152,7 +153,7 @@ def test_frontend_uses_gpx_prefix_consistently():
 
     例外：/api/* 是接口调用（Caddy 单独反代），CDN 是外部绝对地址。
     """
-    for path in (INDEX, PLAYER):
+    for path in (INDEX, PLAYER, REPORT):
         html = _read(path)
         refs = re.findall(r'href="(/[^"]*)"', html)
         for ref in refs:
@@ -166,7 +167,7 @@ PORTAL = ROOT / "web" / "portal.html"
 CADDY = ROOT / "deploy" / "Caddyfile.portal"
 
 
-@pytest.mark.parametrize("path", ["web/portal.html", "web/index.html", "web/player.html"])
+@pytest.mark.parametrize("path", ["web/portal.html", "web/index.html", "web/player.html", "web/report.html"])
 def test_html_is_valid_utf8_with_chinese(path):
     """所有页面的中文必须是合法 UTF-8。
 
@@ -187,6 +188,7 @@ def test_portal_exists_and_links_services():
     assert PORTAL.is_file(), "缺少门户主页 web/portal.html"
     html = _read(PORTAL)
     assert 'href="/gpx/"' in html, "门户缺少 GPX 工具入口"
+    assert 'href="/gpx/report.html"' in html, "门户缺少分析长图入口"
     assert ":3000" in html, "门户缺少 Stronghold 游戏入口"
 
 
@@ -325,7 +327,8 @@ def test_convert_page_has_project_history():
 
 
 @pytest.mark.parametrize("path", ["web/convert.html", "web/player.html",
-                                 "web/index.html", "web/portal.html"])
+                                 "web/index.html", "web/portal.html",
+                                 "web/report.html"])
 def test_page_element_ids_all_exist(path):
     """JS 里引用的元素 ID 必须真的存在。
 
@@ -508,3 +511,201 @@ def test_index_accepts_kml_upload():
     html = _read(INDEX)
     assert 'accept=".gpx,.xml,.kml,.kmz"' in html
     assert "KML" in html
+
+# ---------------------------------------------------------------- 分析长图页
+
+def test_report_page_exists_and_has_features():
+    """分析长图页的关键能力不能被误删。"""
+    assert REPORT.is_file(), "缺少 web/report.html"
+    html = _read(REPORT)
+    for snippet in (
+        "parseGpx",                    # GPX 解析
+        "trkseg",                      # 多段按顺序拼接
+        "buildSplits",                 # 分段
+        "pickSplitStep",               # 步长自适应（≤10 段）
+        "movingSeconds",               # 运动/静止时间拆分
+        "slopeShares",                 # 坡度构成
+        "speedColor",                  # 按速度连续着色
+        "SPEED_STOPS",
+        "/api/tile/windy/",            # Windy 必须走服务端代理
+        "crossOrigin",                 # 独立拉瓦片避免画布污染
+        "toBlob",                      # 导出 PNG
+        "buildPlan",                   # 版面高度先算后画
+        "drawSpeedChart",              # 速度曲线（km/h）
+        "drawEleChart",                # 海拔剖面
+        "drawTable",                   # 分段表
+        "分段数据",
+        "titleInput",                  # 自定义标题输入
+        "运动时间", "静止时间",          # 时间拆分
+        "坡度构成",                     # 爬升/平路/下降比例
+        "爬升 / 下降",                  # 分段表升降两行
+        "缺少时间信息",                 # 无时间戳时的降级提示
+        "PURE_START", "PURE_END",      # 纯函数测试锚点
+    ):
+        assert snippet in html, f"分析长图页缺少要素: {snippet}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 不可用")
+def test_report_js_syntax():
+    js = _extract_inline_js(_read(REPORT))
+    assert js.strip(), "分析长图页未找到内联脚本"
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(js)
+        tmp = f.name
+    try:
+        proc = subprocess.run(["node", "--check", tmp], capture_output=True, text=True)
+        assert proc.returncode == 0, f"分析长图页 JS 语法错误：\n{proc.stderr}"
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def test_report_only_uses_tile_proxy_api():
+    """分析长图页的解析、计算、渲染全在浏览器，唯一服务端调用是瓦片代理。"""
+    js = _extract_inline_js(_read(REPORT))
+    for banned in ("/api/submit", "/api/estimate", "/api/status", "/api/tasks"):
+        assert banned not in js, f"分析长图页不应调用生成类接口: {banned}"
+    assert "/tiles/" not in js, "分析长图页不应使用通用 /tiles/ 路径"
+    used = set(re.findall(r"/api/[a-z]+", js))
+    assert used <= {"/api/tile"}, f"分析长图页出现意外的接口调用: {used}"
+
+
+def test_report_links_and_layout_constants():
+    html = _read(REPORT)
+    assert 'href="/gpx/"' in html, "分析长图页应能返回生成器页"
+    assert 'href="/gpx/player.html"' in html, "分析长图页应能进入回放页"
+    js = _extract_inline_js(html)
+    assert "var W = 1080" in js, "长图宽度应固定为 1080"
+    assert "a0 + step" in js, "分段应使用自适应步长"
+    assert "pickSplitStep" in js, "缺少分段步长选择"
+    assert "MAX_TILES" in js, "瓦片数量必须有上限"
+    # 底图压到 80%，轨迹才够醒目
+    assert "ctx.globalAlpha = 0.8" in js, "底图应半透明（约 80%）"
+    # 海拔折线要按同一套速度色带逐段上色
+    assert "pts[i].c" in js, "海拔折线缺少按速度着色"
+    # 速度曲线必须裁剪在绘图区内，否则尖峰会把曲线画到坐标轴外面
+    assert "ctx.clip()" in js, "速度曲线缺少绘图区裁剪"
+    assert "plotR - plotL" in js, "缺少绘图区矩形"
+    assert "km/h" in js, "速度曲线应以 km/h 标注"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 不可用")
+def test_report_split_and_color_logic():
+    """1km 分段、边界插值、速度色带的边界条件。"""
+    js = _extract_inline_js(_read(REPORT))
+    assert "/* PURE_START */" in js and "/* PURE_END */" in js, "缺少纯函数锚点"
+    pure = js.split("/* PURE_START */", 1)[1].split("/* PURE_END */", 1)[0]
+    driver = r"""
+      var pts = [], cum = [];
+      var ds = [0, 500, 1000, 1500, 2000, 2500, 3000, 3420];
+      for (var i = 0; i < ds.length; i++) {
+        pts.push({ lat: 23 + i * 0.001, lng: 113, ele: 100 + i * 10,
+                   time: 1776000000000 + i * 600000, hr: 120 + i, cad: 80 });
+        cum.push(ds[i]);
+      }
+      var out = {};
+      var rows = buildSplits({ points: pts, cum: cum, hasEle: true });
+      out.count = rows.length;
+      out.dists = rows.map(function (r) { return r.dist; });
+      out.lastTime = rows[rows.length - 1].time;
+      out.gain = rows.map(function (r) { return r.gain; });
+
+      var noTime = pts.map(function (p) {
+        return { lat: p.lat, lng: p.lng, ele: p.ele, time: null, hr: null, cad: null };
+      });
+      var rows2 = buildSplits({ points: noTime, cum: cum, hasEle: false });
+      out.noTime = rows2.map(function (r) { return r.time; });
+      out.noGain = rows2.map(function (r) { return r.gain; });
+      out.empty = buildSplits({ points: [pts[0]], cum: [0], hasEle: true });
+
+      var s = interpSample(cum, pts, 1000);
+      out.interpLat = s.lat;
+      out.pct = [percentile([1, 2, 3, 4], 0.5), percentile([1, 2, 3, 4], 0)];
+      out.color = [speedColor(null, null),
+                   speedColor(0.05, { lo: 1, hi: 2 }),
+                   speedColor(1.0, { lo: 1, hi: 2 }),
+                   speedColor(2.0, { lo: 1, hi: 2 }),
+                   speedColor(1.5, { lo: 1, hi: 2 }),
+                   speedColor(1.25, { lo: 1, hi: 2 })];
+      out.steps = [pickSplitStep(3420), pickSplitStep(12300),
+                   pickSplitStep(30000), pickSplitStep(100000)];
+      out.rows2k = buildSplits({ points: pts, cum: cum, hasEle: true, stepM: 2000 })
+                     .map(function (r) { return r.dist; });
+
+      // 运动 / 静止：111m 走 60s 算运动，原地不动的时间不算
+      var mv = [{ time: 0 }, { time: 60000 }, { time: 120000 }, { time: 180000 }];
+      out.moving = movingSeconds(mv, [0, 111, 111, 111]);
+      out.movingStop = movingSeconds([{ time: 0 }, { time: 60000 }], [0, 0]);
+
+      // 坡度构成：+10% 全爬升、持平全平路、-10% 全下降
+      out.slopeUp = slopeShares([{ ele: 0 }, { ele: 10 }, { ele: 20 },
+                                 { ele: 30 }, { ele: 40 }], [0, 50, 100, 150, 200]);
+      out.slopeFlat = slopeShares([{ ele: 5 }, { ele: 5 }, { ele: 5 }], [0, 50, 100]);
+      out.slopeDown = slopeShares([{ ele: 40 }, { ele: 30 }, { ele: 20 }], [0, 50, 100]);
+      // 阈值 ±5%：4.9% 算平路、5.1% 才算升降（点距 50m，窗口才不会塌缩）
+      function rampPts(grade, n) {
+        var rp = [], rc = [];
+        for (var z = 0; z < n; z++) {
+          rp.push({ ele: grade * z * 50 });
+          rc.push(z * 50);
+        }
+        return { pts: rp, cum: rc };
+      }
+      var t1 = rampPts(0.049, 5), t2 = rampPts(0.051, 5);
+      var t3 = rampPts(-0.049, 5), t4 = rampPts(-0.051, 5);
+      out.slopeEdge = [
+        slopeShares(t1.pts, t1.cum).flat,
+        slopeShares(t2.pts, t2.cum).up,
+        slopeShares(t3.pts, t3.cum).flat,
+        slopeShares(t4.pts, t4.cum).down
+      ];
+      // 下坡段：爬升 0、下降累计
+      var dPts = [], dCum = [];
+      for (var dd = 0; dd < 5; dd++) {
+        dPts.push({ lat: 23, lng: 113, ele: 500 - dd * 20,
+                    time: 1776000000000 + dd * 600000, hr: null, cad: null });
+        dCum.push(dd * 500);
+      }
+      out.downRow = buildSplits({ points: dPts, cum: dCum, hasEle: true })
+        .map(function (r) { return [r.gain, r.loss]; });
+      console.log(JSON.stringify(out));
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(pure + driver)
+        tmp = f.name
+    try:
+        proc = subprocess.run(["node", tmp], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        got = json.loads(proc.stdout.strip())
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+    assert got["count"] == 4, got
+    assert abs(got["dists"][0] - 1.0) < 1e-6, got
+    assert abs(got["dists"][-1] - 0.42) < 1e-6, got
+    assert abs(got["lastTime"] - 600) < 1e-6, got
+    assert got["gain"] == [20, 20, 20, 10], got
+    assert got["noTime"] == [None, None, None, None], got
+    assert got["noGain"] == [None, None, None, None], got
+    assert got["empty"] == [], got
+    assert abs(got["interpLat"] - 23.002) < 1e-9, got
+    assert got["pct"] == [2.5, 1], got
+    # 连续渐变：无数据返回 null、停顿给中性色、两端取到色带首尾
+    assert got["color"] == [None, "#9aa7b4", "#3d7bd9", "#e2513c", "#d8cf4a", "#46b97a"], got
+    # 步长自适应：段数不超过 10
+    assert got["steps"] == [1000, 2000, 3000, 10000], got
+    assert abs(got["rows2k"][0] - 2.0) < 1e-6, got
+    assert abs(got["rows2k"][1] - 1.42) < 1e-6, got
+    # 运动时间只累计「在走」的那一分钟
+    assert abs(got["moving"] - 60) < 1e-6, got
+    assert got["movingStop"] == 0, got
+    # 坡度构成：三段的占比相加为全长
+    assert abs(got["slopeUp"]["up"] - 200) < 1e-6, got
+    assert abs(got["slopeUp"]["flat"]) < 1e-6, got
+    assert abs(got["slopeFlat"]["flat"] - 100) < 1e-6, got
+    assert abs(got["slopeDown"]["down"] - 100) < 1e-6, got
+    # ±5% 阈值边界
+    assert got["slopeEdge"] == [200, 200, 200, 200], got
+    # 下坡段：爬升为 0、下降按负差累计
+    assert got["downRow"] == [[0, 40], [0, 40]], got

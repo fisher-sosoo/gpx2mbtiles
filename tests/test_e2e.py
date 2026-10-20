@@ -638,3 +638,10 @@ class TestProjectStoreUnit:
         import pytest as _pytest
         with _pytest.raises(ProjectNotFoundError):
             store.get("nope")
+
+async def test_report_page_is_served(client):
+    """分析长图页由静态服务提供（生产环境经 Caddy 的 /gpx 前缀访问）。"""
+    resp = await client.get("/report.html")
+    assert resp.status_code == 200
+    assert "分析长图" in resp.text
+    assert "/api/tile/windy/" in resp.text
