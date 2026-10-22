@@ -270,6 +270,9 @@ docker exec -it gpx2mbtiles python -m app.garmin_auth --verify
 - 令牌写到 `GARMINTOKENS`（容器内 `/app/garmin_tokens`，宿主机 `./garmin_tokens`），
   **账号密码不落盘**。
 - 令牌大约一年过期；`--verify` 或页面上的授权状态会告诉你是否需要重新登录。
+- **容器必须能出网，且通常要走代理**：本项目部署机的容器没有直连出口，Garmin 请求
+  必须经 `GARMIN_PROXY`（留空则复用 `TILE_PROXY`）。不设的表现是
+  `Temporary failure in name resolution` + 请求长时间挂起，不是账号问题。
 - **国内账号必须设 `GARMIN_IS_CN=true`**：实测同一账号连 garmin.com 时活动数为 0，
   切到 garmin.cn 才看得到数据，而且两边登录都不报错——只会安静地给你一个空列表。
 - 可选自动续期：`GARMIN_AUTO_RELOGIN=1` 且配置 `GARMIN_EMAIL`/`GARMIN_PASSWORD` 后，

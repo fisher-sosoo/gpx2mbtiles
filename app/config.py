@@ -206,6 +206,10 @@ class Settings:
         self.garmin_min_interval_seconds = _env_float(
             "GARMIN_MIN_INTERVAL_SECONDS", 1.0, 0.0, 60.0)
         self.garmin_timeout_seconds = _env_float("GARMIN_TIMEOUT_SECONDS", 60.0, 5.0, 300.0)
+        # 容器内的出网出口：本机实测容器没有直连，全部走宿主机上的代理。
+        # 不单独配时复用瓦片代理（同一台机器上通常就是那一个）。
+        self.garmin_proxy = (os.getenv("GARMIN_PROXY", "").strip()
+                             or self.tile_proxy or "")
         # 可选：令牌过期后自动用账号密码重登（默认关闭）。
         # 密码只从环境变量读，绝不写盘；开启后服务器上等于持有一份长期凭据。
         self.garmin_email = os.getenv("GARMIN_EMAIL", "").strip()

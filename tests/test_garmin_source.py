@@ -156,6 +156,25 @@ def test_list_activities_normalizes_and_filters(tmp_path, monkeypatch):
     assert item["type"] == "hiking"
 
 
+# ---------------------------------------------------------------- 代理
+def test_proxy_env_is_applied_when_missing(tmp_path, monkeypatch):
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    settings = make_settings(tmp_path, garmin_proxy="http://proxy.local:7893")
+    garmin_source._ensure_proxy(settings)
+    import os as _os
+    assert _os.environ["HTTPS_PROXY"] == "http://proxy.local:7893"
+    assert "host.docker.internal" in _os.environ["NO_PROXY"]
+
+
+def test_proxy_env_is_not_overridden(tmp_path, monkeypatch):
+    import os as _os
+    monkeypatch.setenv("HTTPS_PROXY", "http://already:8080")
+    settings = make_settings(tmp_path, garmin_proxy="http://proxy.local:7893")
+    garmin_source._ensure_proxy(settings)
+    assert _os.environ["HTTPS_PROXY"] == "http://already:8080"
+
+
 # ---------------------------------------------------------------- 授权
 def test_has_token_false_without_dir(tmp_path):
     assert garmin_source.has_token(make_settings(tmp_path)) is False

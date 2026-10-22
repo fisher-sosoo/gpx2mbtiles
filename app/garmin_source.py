@@ -58,8 +58,27 @@ def has_token(settings) -> bool:
     return any(name.endswith(".json") for name in names)
 
 
+def _ensure_proxy(settings) -> None:
+    """让 garminconnect 走宿主机代理。
+
+    garminconnect 内部用 requests / curl_cffi 发请求，两者都从环境变量取代理，
+    没有可以注入 proxies 的入口。容器里如果没有直连出口（本项目部署机就是），
+    不设这两个变量会表现为 DNS 解析失败 + 长时间挂起。
+    已经设了代理的环境不覆盖。
+    """
+    proxy = getattr(settings, "garmin_proxy", "") or ""
+    if not proxy:
+        return
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        if not os.environ.get(key):
+            os.environ[key] = proxy
+    if not os.environ.get("NO_PROXY"):
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1,host.docker.internal"
+
+
 def new_client(settings, email=None, password=None, prompt_mfa=None):
     """新建客户端。延迟导入 garminconnect：没装也能 import 本模块跑单测。"""
+    _ensure_proxy(settings)
     from garminconnect import Garmin
 
     kwargs = {"is_cn": bool(getattr(settings, "garmin_is_cn", False))}
