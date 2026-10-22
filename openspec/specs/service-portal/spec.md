@@ -23,6 +23,12 @@
 - **THEN** 系统 SHALL 提供进入分析长图页（`/gpx/report.html`）的入口卡片
 - **AND** 该卡片的说明 SHALL 写明用途：导入 GPX 生成带统计与 1km 分段的竖版长图
 
+#### Scenario: Garmin 活动长图入口
+
+- **WHEN** 用户查看门户页
+- **THEN** 系统 SHALL 提供进入 Garmin 活动长图页（`/gpx/garmin.html`）的入口卡片
+- **AND** 该卡片的说明 SHALL 写明用途：从 Garmin 拉取活动，生成含心率、步频与温度分段的竖版长图
+
 ### Requirement: 路径分流
 
 系统 SHALL 按路径把请求分流到对应服务。

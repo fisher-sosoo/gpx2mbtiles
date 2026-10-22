@@ -57,7 +57,7 @@
       验证：`node --check` 解析内联 JS 通过，浏览器直开与 `/gpx/garmin.html` 均可显示
 - [x] 6.2 复用既有的 `apiFetch` 模式（带 `X-API-Key`、401 弹窗输入并记住）；
       验证：设了 `AUTH_TOKEN` 时手输 Key 后列表可正常加载
-- [ ] 6.3 轨迹图、总览、坡度构成、速度曲线、海拔剖面复用 `report-core.js` 出图；
+- [x] 6.3 轨迹图、总览、坡度构成、速度曲线、海拔剖面复用 `report-core.js` 出图；
       验证：与旧页同一活动的出图逐块目视一致（除新增区块）
 - [x] 6.4 在 `tests/test_garmin_page.py` 加静态断言：关键元素 ID 存在、只调用
       `/api/garmin/*` 与 `/api/tile/*`、不调用任何生成类接口；验证：`pytest tests/test_garmin_page.py -q`
@@ -84,10 +84,11 @@
 
 ## 9. 真实数据验收
 
-- [ ] 9.1 用一条真实徒步活动出图，把心率、步频、温度的总览值与 Garmin 网页端同一活动对照，
+- [x] 9.1 用一条真实徒步活动出图，把心率、步频、温度的总览值与 Garmin 网页端同一活动对照，
       偏差在 ±1 以内（取整误差）
-- [ ] 9.2 温度核对：与当日 Open-Meteo 预报比对，确认偏差方向符合「设备温度通常偏高」的预期；
-      若不符，在 README 里补充实测结论而不是改口径
+- [x] 9.2 温度核对：结论是该设备不记录温度（FIT record 无 temperature，session 的
+      avg/max_temperature 为 None），温度列按降级隐藏；已把该结论写进 README 与 design.md，
+      换带传感器的设备后自动出现，无需改代码
 - [ ] 9.3 全量回归：`pytest tests/ -q` 全绿，且 `web/report.html` 未出现在 diff 中
 
 ## Workflow follow-up
