@@ -17,6 +17,7 @@ from .gpx_processor import (GpxParseError, build_tile_plan, parse_gpx,
                             parse_track_points)
 from .kml_processor import KmlParseError
 from .poi_enricher import PoiQueryError, fetch_all, filter_pois
+from . import garmin_source
 from . import junction_finder
 from . import kml_naming
 from . import project_chat
@@ -990,6 +991,62 @@ async def download_project(project_id: str):
     fname = meta.get("name") or project_id
     return FileResponse(path=str(path), media_type="application/gpx+xml",
                         filename=f"{_safe_name(fname)}.gpx")
+
+
+# ---------------------------------------------------------------- Garmin 活动
+# 这里拉的是个人运动健康数据，所以比别的接口多一道"失败关闭"：
+# AUTH_TOKEN 为空时直接 403，而不是沿用 require_api_key 的"空即放行"。
+
+def require_garmin(request: Request):
+    if not settings.garmin_enabled:
+        raise HTTPException(status_code=404,
+                            detail="Garmin 功能未启用（GARMIN_ENABLED=0）")
+    if not settings.auth_token:
+        raise HTTPException(
+            status_code=403,
+            detail="使用 Garmin 功能必须设置 AUTH_TOKEN：它决定谁能读你的运动健康数据")
+    return require_api_key(request)
+
+
+def _garmin_auth_unavailable(exc):
+    # 刻意不用 401：前端把 401 当作"该输入 API Key"，两者不能混。
+    return JSONResponse(status_code=503,
+                        content={"error": "garmin_auth", "detail": str(exc)})
+
+
+@app.get("/api/garmin/status", dependencies=[Depends(require_garmin)])
+async def garmin_status():
+    """是否已授权、令牌目录、默认时间窗。"""
+    return await asyncio.to_thread(garmin_source.status, settings)
+
+
+@app.get("/api/garmin/activities", dependencies=[Depends(require_garmin)])
+async def garmin_activities(days: int = 0):
+    """最近 N 天的活动列表；days=0 用配置里的默认值。"""
+    try:
+        items = await asyncio.to_thread(
+            garmin_source.list_activities, settings, days or None)
+    except garmin_source.GarminAuthError as exc:
+        return _garmin_auth_unavailable(exc)
+    except garmin_source.GarminUpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"days": days or settings.garmin_days_default, "activities": items}
+
+
+@app.get("/api/garmin/activity/{activity_id}",
+         dependencies=[Depends(require_garmin)])
+async def garmin_activity(activity_id: int, refresh: bool = False):
+    """单条活动的归一化轨迹；refresh=1 强制重新拉取。"""
+    try:
+        payload = await asyncio.to_thread(
+            garmin_source.load_activity, settings, activity_id, refresh)
+    except garmin_source.GarminAuthError as exc:
+        return _garmin_auth_unavailable(exc)
+    except garmin_source.GarminBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except garmin_source.GarminUpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return payload
 
 
 def _safe_name(name: str) -> str:

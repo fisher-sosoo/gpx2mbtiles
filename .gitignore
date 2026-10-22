@@ -21,3 +21,5 @@ web/node_modules/
 web/_*.js
 web/package.json
 web/package-lock.json
+# Garmin OAuth 令牌（等价于账号读写权限，禁止入库）
+garmin_tokens/

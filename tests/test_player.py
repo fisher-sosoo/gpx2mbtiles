@@ -189,6 +189,7 @@ def test_portal_exists_and_links_services():
     html = _read(PORTAL)
     assert 'href="/gpx/"' in html, "门户缺少 GPX 工具入口"
     assert 'href="/gpx/report.html"' in html, "门户缺少分析长图入口"
+    assert 'href="/gpx/garmin.html"' in html, "门户缺少 Garmin 活动长图入口"
     assert ":3000" in html, "门户缺少 Stronghold 游戏入口"
 
 

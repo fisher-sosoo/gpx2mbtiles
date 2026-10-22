@@ -191,6 +191,28 @@ class Settings:
         }
         self.default_tile_layer = "windy"
 
+        # ---- Garmin 活动长图 ----
+        # 只保存预授权得到的 OAuth 令牌，不保存账号密码。令牌目录独立于 DATA_DIR：
+        # data/ 是给下载文件用的，任何"整体暴露 data/"的改动都不该顺带泄露账号。
+        self.garmin_enabled = os.getenv("GARMIN_ENABLED", "1").strip().lower() \
+            not in ("0", "false", "no", "off")
+        self.garmin_tokens = os.getenv(
+            "GARMINTOKENS", "").strip() or os.path.expanduser("~/.garminconnect")
+        self.garmin_is_cn = os.getenv("GARMIN_IS_CN", "").strip().lower() \
+            in ("1", "true", "yes", "on")
+        self.garmin_days_default = _env_int("GARMIN_DAYS_DEFAULT", 30, 1, 365)
+        self.garmin_activity_limit = _env_int("GARMIN_ACTIVITY_LIMIT", 50, 1, 500)
+        self.garmin_cache_max_mb = _env_int("GARMIN_CACHE_MAX_MB", 512, 0, 10240)
+        self.garmin_min_interval_seconds = _env_float(
+            "GARMIN_MIN_INTERVAL_SECONDS", 1.0, 0.0, 60.0)
+        self.garmin_timeout_seconds = _env_float("GARMIN_TIMEOUT_SECONDS", 60.0, 5.0, 300.0)
+        # 可选：令牌过期后自动用账号密码重登（默认关闭）。
+        # 密码只从环境变量读，绝不写盘；开启后服务器上等于持有一份长期凭据。
+        self.garmin_email = os.getenv("GARMIN_EMAIL", "").strip()
+        self.garmin_password = os.getenv("GARMIN_PASSWORD", "")
+        self.garmin_auto_relogin = os.getenv(
+            "GARMIN_AUTO_RELOGIN", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 _settings: Settings | None = None
 

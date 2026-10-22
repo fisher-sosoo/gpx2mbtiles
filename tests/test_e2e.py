@@ -645,3 +645,85 @@ async def test_report_page_is_served(client):
     assert resp.status_code == 200
     assert "分析长图" in resp.text
     assert "/api/tile/windy/" in resp.text
+
+# ---------------------------------------------------------------- Garmin 活动长图
+
+async def test_garmin_page_is_served(client):
+    """Garmin 活动页由静态服务提供，且引用了共享内核。"""
+    resp = await client.get("/garmin.html")
+    assert resp.status_code == 200
+    assert "Garmin 活动长图" in resp.text
+    assert "/gpx/report-core.js" in resp.text
+
+
+async def test_garmin_core_file_is_served(client):
+    resp = await client.get("/report-core.js")
+    assert resp.status_code == 200
+    assert "PURE_START" in resp.text
+
+
+async def test_garmin_endpoints_fail_closed_without_auth_token(client, settings, monkeypatch):
+    """没设 AUTH_TOKEN 时直接 403：这个接口能读完整运动健康记录，不能空放行。"""
+    monkeypatch.setattr(settings, "auth_token", "")
+    resp = await client.get("/api/garmin/status")
+    assert resp.status_code == 403
+    assert "AUTH_TOKEN" in resp.json()["detail"]
+
+
+async def test_garmin_endpoints_require_api_key(client, settings, monkeypatch):
+    monkeypatch.setattr(settings, "auth_token", "secret")
+    resp = await client.get("/api/garmin/status")
+    assert resp.status_code == 401
+
+
+async def test_garmin_status_reports_unauthorized(client, settings, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "auth_token", "secret")
+    monkeypatch.setattr(settings, "garmin_tokens", str(tmp_path / "no-tokens"))
+    resp = await client.get("/api/garmin/status", headers={"X-API-Key": "secret"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["authorized"] is False
+    assert body["enabled"] is True
+
+
+async def test_garmin_activities_without_token_returns_503(client, settings, monkeypatch, tmp_path):
+    """上游没授权时返回可读的 503（不能用 401，前端会误以为要输入 API Key）。"""
+    monkeypatch.setattr(settings, "auth_token", "secret")
+    monkeypatch.setattr(settings, "garmin_tokens", str(tmp_path / "no-tokens"))
+    resp = await client.get("/api/garmin/activities", headers={"X-API-Key": "secret"})
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "garmin_auth"
+    assert "garmin_auth" in resp.json()["detail"]
+
+
+async def test_garmin_activity_reads_cache(client, settings, monkeypatch):
+    """命中缓存时接口不碰 Garmin，直接返回轨迹 JSON。"""
+    import json
+    import os
+
+    from app import garmin_source
+
+    monkeypatch.setattr(settings, "auth_token", "secret")
+    base = garmin_source.cache_dir(settings)
+    payload = {"id": 5, "name": "缓存活动", "points": [
+        {"t": 1, "lat": 28.0, "lng": 98.0, "ele": 3000.0, "hr": 120, "cad": 80, "temp": 9.0}]}
+    with open(os.path.join(base, "5.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+
+    resp = await client.get("/api/garmin/activity/5", headers={"X-API-Key": "secret"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "缓存活动"
+
+async def test_garmin_busy_returns_429(client, settings, monkeypatch, tmp_path):
+    """同一时刻只允许一个拉取，第二个请求要拿到 429 而不是排队挂住。"""
+    from app import garmin_source
+
+    monkeypatch.setattr(settings, "auth_token", "secret")
+    monkeypatch.setattr(settings, "garmin_tokens", str(tmp_path / "tokens"))
+
+    def busy(*args, **kwargs):
+        raise garmin_source.GarminBusyError("正在拉取另一条活动")
+
+    monkeypatch.setattr(garmin_source, "load_activity", busy)
+    resp = await client.get("/api/garmin/activity/9", headers={"X-API-Key": "secret"})
+    assert resp.status_code == 429

@@ -237,6 +237,46 @@ App 的列表按名称浏览，日期打头会把所有轨迹挤成同前缀。
 
 ---
 
+## ⌚ Garmin 活动长图（PC 端）
+
+不想手动导出 GPX 时，把 Garmin 账号授权到服务器上，点一条活动就直接出图。
+
+| 区块 | 内容 |
+|---|---|
+| 轨迹图 / 总览 / 坡度构成 / 速度曲线 / 海拔剖面 | 与「分析长图」同一套渲染 |
+| 总览新增 | 平均心率、最高心率、平均步频、温度区间 |
+| 运动表 | 距离、用时、配速、爬升 / 下降 |
+| 生理表 | 心率（均 / 最高）、步频、温度 |
+
+- 数据来自原始 **FIT**：Garmin 的 GPX 导出不保证带心率，TCX 标准里没有温度。
+- 同一活动只拉一次，落盘 `data/garmin/<id>.fit` + `<id>.json`，之后走本地缓存。
+- 心率 0（胸带脱落）在解析层就算作缺测，不参与任何均值。
+- **温度是设备自身传感器的读数，不是气温**：只能看相对变化（垭口 vs 谷底），别当天气用。
+  设备本身没有温度传感器时（实测部分 Garmin 手表的 session 里 `avg_temperature` 为空），
+  温度列会自动整列隐藏，不会画一排「—」。
+- 生理聚合写在页面自己的 `enrichSplits` 里；共享纯函数在 `web/report-core.js`，
+  由 `tests/test_garmin_page.py` 与 `report.html` 的内联副本逐行比对，防止两页算出不同结果。
+
+### 授权（一次性）
+
+```bash
+# 1) 容器里跑一次交互式登录（会提示邮箱、密码、MFA）
+docker exec -it gpx2mbtiles python -m app.garmin_auth
+
+# 2) 校验令牌是否可用
+docker exec -it gpx2mbtiles python -m app.garmin_auth --verify
+```
+
+- 令牌写到 `GARMINTOKENS`（容器内 `/app/garmin_tokens`，宿主机 `./garmin_tokens`），
+  **账号密码不落盘**。
+- 令牌大约一年过期；`--verify` 或页面上的授权状态会告诉你是否需要重新登录。
+- **国内账号必须设 `GARMIN_IS_CN=true`**：实测同一账号连 garmin.com 时活动数为 0，
+  切到 garmin.cn 才看得到数据，而且两边登录都不报错——只会安静地给你一个空列表。
+- 可选自动续期：`GARMIN_AUTO_RELOGIN=1` 且配置 `GARMIN_EMAIL`/`GARMIN_PASSWORD` 后，
+  令牌失效会自动重登一次。**这等于在服务器上留一份长期凭据**，默认关闭，自己权衡。
+- **必须设置 `AUTH_TOKEN`**：这三个接口能读到完整的运动健康记录，所以没设
+  `AUTH_TOKEN` 时它们直接返回 403，而不是像其它接口那样放行。
+
 ## 📦 离线地图生成（服务端）
 
 云服务器负责瓦片下载与 mbtiles 组装；手机浏览器上传 GPX、查看进度、下载成品 .mbtiles 导入 Avenza / Guru Maps 离线导航。
@@ -267,6 +307,9 @@ App 的列表按名称浏览，日期打头会把所有轨迹挤成同前缀。
 | /api/status/{task_id} | GET | 任务状态：总瓦片、已下载、失败数、状态、下载链接 |
 | /api/cancel/{task_id} | POST | 取消任务并清理临时文件 |
 | /api/download/{task_id} | GET | 下载成品 .gpkg / .mbtiles |
+| /api/garmin/status | GET | Garmin 授权状态与令牌目录（需 AUTH_TOKEN） |
+| /api/garmin/activities | GET | 最近 N 天活动列表，`?days=30`（需 AUTH_TOKEN） |
+| /api/garmin/activity/{id} | GET | 单条活动的归一化轨迹，`?refresh=1` 强制重拉（需 AUTH_TOKEN） |
 
 ## 本地开发
 
